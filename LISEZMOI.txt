@@ -1,0 +1,15 @@
+BONS POINTS - PWA (HTML/CSS/JS, sans dépendance)
+
+Test local (sur l'ordinateur) :
+  cd bonspoints && python3 -m http.server 8080   puis http://localhost:8080
+
+Pour l'utiliser sur mobile : il faut l'héberger en HTTPS (obligatoire pour l'installation et le mode hors ligne).
+Options gratuites : GitHub Pages, Netlify, Cloudflare Pages (glisser-déposer le dossier), ou votre propre serveur web.
+
+Installation :
+  Android (Chrome) : menu > Installer l'application
+  iPhone (Safari)  : Partager > Sur l'écran d'accueil
+
+Les données sont enregistrées sur chaque appareil (pas de serveur).
+Utilisez Réglages > Exporter / Importer pour sauvegarder ou transférer.
+Après modification des fichiers, changez CACHE dans sw.js (ex. bonspoints-v2) pour forcer la mise à jour.
