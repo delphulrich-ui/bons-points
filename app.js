@@ -69,6 +69,9 @@
   function defaults() {
     return {
       version: 1,
+      epoch: { id: '0', ts: 0 }, // change quand on réinitialise ou importe : remplace alors tous les appareils
+      ts: {},            // horodatage de chaque note (pour la fusion entre appareils)
+      settingsTs: 0,     // date de dernière modification des réglages
       settings: {
         countedDays: [0, 1, 2, 3, 4], // jours comptés pour la récompense (lundi = 0)
         children: [
@@ -91,6 +94,9 @@
       if (!Array.isArray(c.goals)) c.goals = defaultGoals();
       if (!Array.isArray(c.spent)) c.spent = [];
     });
+    if (!s.epoch || typeof s.epoch.id !== 'string') s.epoch = { id: '0', ts: 0 };
+    if (!s.ts || typeof s.ts !== 'object') s.ts = {};
+    if (typeof s.settingsTs !== 'number') s.settingsTs = 0;
     return s;
   }
 
@@ -103,9 +109,16 @@
   }
 
   let state = load();
+  const allSig = () => JSON.stringify([state.epoch, state.settingsTs, state.log, state.ts]);
+  let settingsSig = JSON.stringify(state.settings);
+  let lastAll = allSig();
   function save() {
+    const sig = JSON.stringify(state.settings);
+    if (sig !== settingsSig) { settingsSig = sig; state.settingsTs = Date.now(); }
     try { localStorage.setItem(STORE_KEY, JSON.stringify(state)); }
     catch (e) { toast('Sauvegarde impossible sur cet appareil'); }
+    const all = allSig();
+    if (all !== lastAll) { lastAll = all; scheduleSync(); }
   }
 
   const ui = { tab: 'day', childId: state.settings.children[0].id, date: today(), weekRef: today(), unlocked: false, pin: null };
@@ -120,6 +133,7 @@
 
   function setV(ds, cid, tid, v) {
     const L = state.log;
+    state.ts[`${ds}|${cid}|${tid}`] = Date.now();
     if (v === 0) {
       if (L[ds] && L[ds][cid]) {
         delete L[ds][cid][tid];
@@ -369,6 +383,7 @@
         <div class="days-check">${days}</div>
         <p class="hint">Par défaut du lundi au vendredi : le bilan donne la récompense du week-end.</p>
       </section>
+      ${syncHtml()}
       <section class="card">
         <h3 class="s-title" style="margin-top:0">Code parent 🔒</h3>
         <p class="hint">Code à 4 chiffres demandé pour ouvrir les Réglages et valider une récompense. C’est un verrou simple contre les enfants, pas une protection de données sensibles.</p>
@@ -549,6 +564,206 @@
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   }
 
+  /* ------------------------------------------------------------------ *
+   *  Synchronisation entre appareils (serveur Cloudflare Workers + D1)
+   * ------------------------------------------------------------------ */
+  const SYNC_LS = 'bonspoints.sync';
+  const DEFAULT_SYNC_URL = 'https://bons-points-sync.delph-ulrich.workers.dev';
+  const KEY_RE = /^[A-Za-z0-9_-]{32,64}$/;
+  const clone = o => JSON.parse(JSON.stringify(o));
+  const canon = o => JSON.stringify(o, (k, v) => (v && typeof v === 'object' && !Array.isArray(v)
+    ? Object.keys(v).sort().reduce((r, x) => { r[x] = v[x]; return r; }, {}) : v));
+  const b64u = t => btoa(t).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  const unb64u = t => atob(t.replace(/-/g, '+').replace(/_/g, '/'));
+  const okUrl = u => /^https:\/\/[^\s/]+[^\s]*$/.test(u) || /^http:\/\/localhost(:\d+)?$/.test(u);
+
+  function loadSync() {
+    try {
+      const o = JSON.parse(localStorage.getItem(SYNC_LS));
+      if (o && okUrl(o.url) && KEY_RE.test(o.key)) return { url: o.url, key: o.key };
+    } catch (e) { /* aucune configuration */ }
+    return {};
+  }
+  function saveSync() {
+    try {
+      if (sync.key) localStorage.setItem(SYNC_LS, JSON.stringify(sync));
+      else localStorage.removeItem(SYNC_LS);
+    } catch (e) { /* ignoré */ }
+  }
+  let sync = loadSync();
+  let syncInfo = { state: sync.key ? 'idle' : 'off', at: 0, msg: '' };
+  let syncing = false, syncAgain = false, syncTimer = null;
+
+  const pairingCode = () => b64u(JSON.stringify({ u: sync.url, k: sync.key }));
+  const pairingLink = () => `${location.origin}${location.pathname}#sync=${pairingCode()}`;
+  function parsePairing(text) {
+    const m = /sync=([A-Za-z0-9_-]+)/.exec(text);
+    try {
+      const o = JSON.parse(unb64u(m ? m[1] : text.trim()));
+      if (o && typeof o.u === 'string' && okUrl(o.u) && KEY_RE.test(o.k || '')) return { url: o.u.replace(/\/+$/, ''), key: o.k };
+    } catch (e) { /* code invalide */ }
+    return null;
+  }
+
+  function syncLabel() {
+    if (!sync.key) return 'Non configurée';
+    if (syncInfo.state === 'busy') return 'Synchronisation…';
+    if (syncInfo.state === 'err') return syncInfo.msg || 'Erreur de synchronisation';
+    if (syncInfo.at) { const d = new Date(syncInfo.at); return `Synchronisé à ${pad(d.getHours())}:${pad(d.getMinutes())}`; }
+    return 'En attente';
+  }
+  function paintSync() {
+    const el = document.getElementById('sync-chip');
+    if (el) el.textContent = syncLabel();
+  }
+
+  const wireDoc = () => ({ v: 1, epoch: state.epoch, settings: state.settings, settingsTs: state.settingsTs, log: state.log, ts: state.ts });
+  const isWire = d => !!(d && typeof d === 'object' && d.settings && Array.isArray(d.settings.children) && d.log &&
+    typeof d.log === 'object' && d.ts && typeof d.ts === 'object' && d.epoch && typeof d.epoch.id === 'string');
+
+  // Fusion de deux versions des données. Le résultat est identique quel que soit l'ordre,
+  // donc les appareils convergent vers les mêmes données.
+  function mergeDocs(a, b) {
+    if (!b) return clone(a);
+    if (a.epoch.id !== b.epoch.id) {
+      // Réinitialisation ou import : la version la plus récente remplace l'autre.
+      const aWins = a.epoch.ts !== b.epoch.ts ? a.epoch.ts > b.epoch.ts : a.epoch.id > b.epoch.id;
+      return clone(aWins ? a : b);
+    }
+    // Réglages : la dernière modification l'emporte (égalité départagée de façon stable).
+    const win = a.settingsTs !== b.settingsTs ? (a.settingsTs > b.settingsTs ? a : b)
+      : (canon(a.settings) >= canon(b.settings) ? a : b);
+    const lose = win === a ? b : a;
+    const out = { v: 1, epoch: clone(a.epoch), settings: clone(win.settings), settingsTs: win.settingsTs, log: {}, ts: {} };
+    // Récompenses validées : on garde celles des deux côtés.
+    for (const c of out.settings.children) {
+      const o = lose.settings.children.find(x => x.id === c.id);
+      if (!o) continue;
+      const seen = new Set(c.spent.map(x => x.id));
+      for (const x of (o.spent || [])) if (!seen.has(x.id)) c.spent.push(clone(x));
+      c.spent.sort((p, q) => ((p.date + p.id) < (q.date + q.id) ? -1 : 1));
+      for (const og of (o.goals || [])) {
+        if (!og.done) continue;
+        const g = c.goals.find(x => x.id === og.id);
+        if (g && !g.done) { g.done = true; g.doneDate = og.doneDate; }
+      }
+    }
+    // Notes : la plus récente de chaque case l'emporte.
+    const keys = new Set([...Object.keys(a.ts), ...Object.keys(b.ts)]);
+    for (const d of [a, b]) for (const ds in d.log) for (const cid in d.log[ds]) for (const tid in d.log[ds][cid]) keys.add(`${ds}|${cid}|${tid}`);
+    const known = new Set(out.settings.children.map(c => c.id));
+    const val = (d, ds, cid, tid) => (d.log[ds] && d.log[ds][cid] && d.log[ds][cid][tid]) || 0;
+    for (const k of keys) {
+      const [ds, cid, tid] = k.split('|');
+      if (!known.has(cid)) continue;
+      const ta = a.ts[k] || 0, tb = b.ts[k] || 0;
+      const va = val(a, ds, cid, tid), vb = val(b, ds, cid, tid);
+      const v = ta !== tb ? (ta > tb ? va : vb) : Math.max(va, vb);
+      const t = Math.max(ta, tb);
+      if (v !== 0) {
+        if (!out.log[ds]) out.log[ds] = {};
+        if (!out.log[ds][cid]) out.log[ds][cid] = {};
+        out.log[ds][cid][tid] = v;
+      }
+      if (t > 0) out.ts[k] = t;
+    }
+    return out;
+  }
+
+  function applyMerged(m) {
+    if (canon(m) === canon(wireDoc())) return;
+    state.epoch = m.epoch; state.settings = m.settings; state.settingsTs = m.settingsTs;
+    state.log = m.log; state.ts = m.ts;
+    normalize(state);
+    settingsSig = JSON.stringify(state.settings);
+    lastAll = allSig();
+    try { localStorage.setItem(STORE_KEY, JSON.stringify(state)); } catch (e) { /* ignoré */ }
+    if (!getChild(ui.childId)) ui.childId = state.settings.children[0].id;
+    if (ui.tab !== 'settings' && !ui.pin) render();
+  }
+
+  async function api(method, body) {
+    const ctl = new AbortController();
+    const to = setTimeout(() => ctl.abort(), 12000);
+    try {
+      const res = await fetch(sync.url + '/state', {
+        method, signal: ctl.signal,
+        headers: { Authorization: 'Bearer ' + sync.key, 'Content-Type': 'application/json' },
+        body: body ? JSON.stringify(body) : undefined
+      });
+      let json = null;
+      try { json = await res.json(); } catch (e) { /* réponse vide */ }
+      return { status: res.status, json };
+    } finally { clearTimeout(to); }
+  }
+
+  function scheduleSync() {
+    if (!sync.key) return;
+    clearTimeout(syncTimer);
+    syncTimer = setTimeout(runSync, 2500);
+  }
+
+  async function runSync() {
+    if (!sync.key || !sync.url) return;
+    if (syncing) { syncAgain = true; return; }
+    if (!navigator.onLine) { syncInfo = { ...syncInfo, state: 'err', msg: 'Hors connexion' }; paintSync(); return; }
+    syncing = true;
+    syncInfo = { ...syncInfo, state: 'busy' };
+    paintSync();
+    try {
+      for (let i = 0; i < 4; i++) {
+        const g = await api('GET');
+        if (g.status === 401) throw new Error('Clé refusée par le serveur');
+        if (g.status !== 200 || !g.json) throw new Error('Erreur du serveur (' + g.status + ')');
+        const remote = g.json.data;
+        if (remote && !isWire(remote)) throw new Error('Données du serveur illisibles');
+        // Fusion et application sans aucune pause : une saisie en cours ne peut pas être écrasée.
+        const merged = mergeDocs(wireDoc(), remote);
+        applyMerged(merged);
+        if (remote && canon(merged) === canon(remote)) break;
+        const p = await api('PUT', { data: merged, baseRev: g.json.rev });
+        if (p.status === 200) break;
+        if (p.status !== 409) throw new Error('Erreur du serveur (' + p.status + ')');
+        if (i === 3) throw new Error('Conflit, nouvel essai automatique');
+      }
+      syncInfo = { state: 'ok', at: Date.now(), msg: '' };
+    } catch (e) {
+      const net = e.name === 'AbortError' || e instanceof TypeError;
+      syncInfo = { state: 'err', at: syncInfo.at, msg: net ? 'Serveur injoignable, nouvel essai automatique' : e.message };
+    } finally {
+      syncing = false;
+      paintSync();
+      if (syncAgain) { syncAgain = false; scheduleSync(); }
+    }
+  }
+
+  function syncHtml() {
+    if (!sync.key) {
+      return `
+      <section class="card">
+        <h3 class="s-title" style="margin-top:0">Synchronisation entre appareils</h3>
+        <p class="hint">Partagez les mêmes points sur plusieurs téléphones. Les données sont enregistrées sur votre propre serveur Cloudflare et protégées par une clé secrète.</p>
+        ${DEFAULT_SYNC_URL ? '' : '<label class="field">Adresse du serveur<input id="sync-url" class="in" type="url" placeholder="https://….workers.dev" autocomplete="off"></label>'}
+        <div class="row-actions" style="margin-top:10px"><button class="btn" data-action="sync-enable">Activer sur cet appareil</button></div>
+        <h3 class="s-title">Rejoindre un groupe existant</h3>
+        <p class="hint">Sur le premier appareil, copiez le lien ou le code d’appairage, puis collez-le ici.</p>
+        <div class="row-actions"><input id="sync-code" class="in grow" type="text" placeholder="Lien ou code d’appairage" autocomplete="off"><button class="btn ghost" data-action="sync-join">Rejoindre</button></div>
+      </section>`;
+    }
+    return `
+      <section class="card">
+        <div class="card-head"><h3 class="s-title" style="margin:0">Synchronisation</h3><span id="sync-chip" class="chip">${esc(syncLabel())}</span></div>
+        <div class="row-actions" style="margin-top:12px">
+          <button class="btn" data-action="sync-now">Synchroniser maintenant</button>
+          <button class="btn ghost" data-action="sync-copy">Copier le lien d’appairage</button>
+        </div>
+        <label class="field" style="margin-top:12px">Code d’appairage (secret : ne le partagez qu’avec l’autre parent)
+          <input class="in mono" type="text" readonly data-select value="${esc(pairingCode())}"></label>
+        <p class="hint">Pour ajouter un téléphone : ouvrez le lien dessus, ou collez le code dans Réglages. Les modifications se synchronisent toutes seules.</p>
+        <p><button class="btn danger" data-action="sync-leave">Quitter la synchronisation</button></p>
+      </section>`;
+  }
+
   /* Code parent */
   function lockInfo() {
     try { return JSON.parse(localStorage.getItem(LOCK_KEY)) || { fails: 0, until: 0 }; }
@@ -719,6 +934,34 @@
         save(); render(); toast('Code modifié ✔');
         return;
       }
+      case 'sync-enable': {
+        const urlEl = document.getElementById('sync-url');
+        const url = ((urlEl && urlEl.value) || DEFAULT_SYNC_URL).trim().replace(/\/+$/, '');
+        if (!okUrl(url)) { toast('Adresse du serveur invalide'); return; }
+        const bytes = crypto.getRandomValues(new Uint8Array(24));
+        sync = { url, key: b64u(String.fromCharCode(...bytes)) };
+        saveSync(); runSync(); render(); toast('Synchronisation activée ✔');
+        return;
+      }
+      case 'sync-join': {
+        const cfg = parsePairing((document.getElementById('sync-code').value || '').trim());
+        if (!cfg) { toast('Lien ou code d’appairage invalide'); return; }
+        if (!confirm('Rejoindre la synchronisation ? Les données de cet appareil seront fusionnées avec celles du groupe.')) return;
+        sync = cfg; saveSync(); runSync(); render(); toast('Appareil rejoint ✔');
+        return;
+      }
+      case 'sync-now': runSync(); return;
+      case 'sync-copy': {
+        const link = pairingLink();
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(link).then(() => toast('Lien copié ✔'), () => toast('Copie impossible : copiez le code ci-dessous'));
+        } else toast('Copie impossible : copiez le code ci-dessous');
+        return;
+      }
+      case 'sync-leave':
+        if (!confirm('Quitter la synchronisation sur cet appareil ? Les données restent ici et sur le serveur.')) return;
+        sync = {}; saveSync(); syncInfo = { state: 'off', at: 0, msg: '' };
+        break;
       case 'export':
         download(`bons-points-${today()}.json`, JSON.stringify(state, null, 2));
         return;
@@ -726,8 +969,9 @@
         document.getElementById('import-file').click();
         return;
       case 'reset':
-        if (!confirm('Tout effacer (réglages et historique) ? Cette action est définitive.')) return;
+        if (!confirm(sync.key ? 'Tout effacer, y compris sur les autres appareils synchronisés ? Cette action est définitive.' : 'Tout effacer (réglages et historique) ? Cette action est définitive.')) return;
         state = defaults();
+        state.epoch = { id: 'e' + uid(), ts: Date.now() };
         ui.childId = state.settings.children[0].id;
         break;
       case 'install':
@@ -748,12 +992,15 @@
     if (el.id === 'import-file') {
       const file = el.files && el.files[0];
       if (!file) return;
+      if (sync.key && !confirm('Importer remplacera aussi les données des autres appareils synchronisés. Continuer ?')) { el.value = ''; return; }
       const reader = new FileReader();
       reader.onload = () => {
         try {
           const s = JSON.parse(reader.result);
           if (!isValid(s)) throw new Error('format');
           state = normalize(s);
+          state.epoch = { id: 'e' + uid(), ts: Date.now() };
+          state.ts = {};
           ui.childId = state.settings.children[0].id;
           save(); render(); toast('Sauvegarde importée ✔');
         } catch (err) { toast('Fichier invalide'); }
@@ -796,6 +1043,26 @@
     save();
   });
 
+  document.addEventListener('focusin', e => { if (e.target && e.target.hasAttribute && e.target.hasAttribute('data-select')) e.target.select(); });
+
+  // Appairage par lien : ouvrir « …/#sync=CODE » rejoint le groupe.
+  function joinFromLink() {
+    const m = /#sync=([A-Za-z0-9_-]+)/.exec(location.hash);
+    if (!m) return;
+    history.replaceState(null, '', location.pathname + location.search);
+    const cfg = parsePairing(m[1]);
+    if (!cfg) { setTimeout(() => toast('Lien d’appairage invalide'), 300); return; }
+    if (confirm('Rejoindre la synchronisation ? Les données de cet appareil seront fusionnées avec celles du groupe.')) {
+      sync = cfg; saveSync(); setTimeout(() => { toast('Appareil rejoint ✔'); runSync(); }, 300);
+    }
+  }
+  joinFromLink();
+  window.addEventListener('hashchange', joinFromLink); // lien ouvert alors que l'application tourne déjà
+
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) runSync(); });
+  window.addEventListener('online', runSync);
+  setInterval(() => { if (!document.hidden) runSync(); }, 45000);
+
   // Les Réglages se reverrouillent dès que l'application quitte l'écran.
   document.addEventListener('visibilitychange', () => {
     if (document.hidden && (ui.unlocked || ui.pin)) {
@@ -806,6 +1073,7 @@
   });
 
   render();
+  if (sync.key) setTimeout(runSync, 400);
 
   if ('serviceWorker' in navigator && location.protocol !== 'file:') {
     window.addEventListener('load', () => navigator.serviceWorker.register('sw.js').catch(() => {}));

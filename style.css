@@ -197,3 +197,6 @@ button { cursor: pointer; }
 .key.small { font-size: .85rem; font-weight: 600; color: var(--muted); }
 .key:active { background: var(--primary-soft); }
 @media (prefers-reduced-motion: reduce) { .pin.shake { animation: none; } }
+
+/* Synchronisation */
+.in.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .75rem; }
