@@ -5,6 +5,23 @@
    *  Utilitaires
    * ------------------------------------------------------------------ */
   const STORE_KEY = 'bonspoints.v1';
+  const LOCK_KEY = 'bonspoints.lock';
+  // Empreinte du code parent par défaut (le code lui-même n'est pas écrit dans le programme).
+  const DEFAULT_PIN_HASH = '19611nm0113';
+  const cyrb53 = (str, seed = 0) => {
+    let h1 = 0xdeadbeef ^ seed, h2 = 0x41c6ce57 ^ seed;
+    for (let i = 0, ch; i < str.length; i++) {
+      ch = str.charCodeAt(i);
+      h1 = Math.imul(h1 ^ ch, 2654435761);
+      h2 = Math.imul(h2 ^ ch, 1597334677);
+    }
+    h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507);
+    h1 ^= Math.imul(h2 ^ (h2 >>> 13), 3266489909);
+    h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507);
+    h2 ^= Math.imul(h1 ^ (h1 >>> 13), 3266489909);
+    return (4294967296 * (2097151 & h2) + (h1 >>> 0)).toString(36);
+  };
+  const hashPin = p => cyrb53('bp|' + p + '|k7');
   const DAY_SHORT = ['Lun', 'Mar', 'Mer', 'Jeu', 'Ven', 'Sam', 'Dim'];
   const DAY_LONG = ['lundi', 'mardi', 'mercredi', 'jeudi', 'vendredi', 'samedi', 'dimanche'];
   const DAY_NAMES = ['Lundi', 'Mardi', 'Mercredi', 'Jeudi', 'Vendredi', 'Samedi', 'Dimanche'];
@@ -45,14 +62,18 @@
     { name: 'Or', emoji: '🥇', min: c, reward: 'Une sortie au choix : parc, piscine ou cinéma' }
   ];
 
+  const defaultGoals = () => [
+    { id: 'g' + uid(), name: 'Mon objectif', emoji: '🎁', target: 150, done: false }
+  ];
+
   function defaults() {
     return {
       version: 1,
       settings: {
         countedDays: [0, 1, 2, 3, 4], // jours comptés pour la récompense (lundi = 0)
         children: [
-          { id: 'c1', name: 'Enfant 1', age: 10, emoji: '🦁', dailyGoal: 8, tasks: defaultTasks(), tiers: defaultTiers(30, 40, 48) },
-          { id: 'c2', name: 'Enfant 2', age: 6, emoji: '🐯', dailyGoal: 7, tasks: defaultTasks(), tiers: defaultTiers(25, 35, 45) }
+          { id: 'c1', name: 'Enfant 1', age: 10, emoji: '🦁', dailyGoal: 8, tasks: defaultTasks(), tiers: defaultTiers(30, 40, 48), goals: defaultGoals(), spent: [] },
+          { id: 'c2', name: 'Enfant 2', age: 6, emoji: '🐯', dailyGoal: 7, tasks: defaultTasks(), tiers: defaultTiers(25, 35, 45), goals: defaultGoals(), spent: [] }
         ]
       },
       log: {} // log[date][enfant][tâche] = 1 (fait) | -1 (pas fait)
@@ -64,10 +85,19 @@
       s.settings.children.length > 0 && Array.isArray(s.settings.countedDays) && s.log && typeof s.log === 'object';
   }
 
+  // Ajoute les champs de la cagnotte aux données enregistrées avant cette version.
+  function normalize(s) {
+    s.settings.children.forEach(c => {
+      if (!Array.isArray(c.goals)) c.goals = defaultGoals();
+      if (!Array.isArray(c.spent)) c.spent = [];
+    });
+    return s;
+  }
+
   function load() {
     try {
       const raw = localStorage.getItem(STORE_KEY);
-      if (raw) { const s = JSON.parse(raw); if (isValid(s)) return s; }
+      if (raw) { const s = JSON.parse(raw); if (isValid(s)) return normalize(s); }
     } catch (e) { /* données illisibles : on repart des valeurs par défaut */ }
     return defaults();
   }
@@ -78,7 +108,7 @@
     catch (e) { toast('Sauvegarde impossible sur cet appareil'); }
   }
 
-  const ui = { tab: 'day', childId: state.settings.children[0].id, date: today(), weekRef: today() };
+  const ui = { tab: 'day', childId: state.settings.children[0].id, date: today(), weekRef: today(), unlocked: false, pin: null };
 
   const getChild = id => state.settings.children.find(c => c.id === id);
   const curChild = () => getChild(ui.childId) || state.settings.children[0];
@@ -128,6 +158,29 @@
     const next = ts.find(t => total < t.min) || null;
     return { got, next, ts };
   }
+
+  /* ------------------------------------------------------------------ *
+   *  Cagnotte : les points positifs de chaque semaine s'accumulent.
+   *  Une mauvaise semaine compte 0 (elle ne fait jamais baisser la cagnotte).
+   * ------------------------------------------------------------------ */
+  function weeklyEarned(c) {
+    const days = Object.keys(state.log).sort();
+    const out = [];
+    if (!days.length) return out;
+    const last = fmt(monday(new Date()));
+    for (let m = monday(parse(days[0])); fmt(m) <= last; m = addDays(m, 7)) {
+      out.push({ mon: fmt(m), pts: Math.max(0, weekTotal(c, m)) });
+    }
+    return out;
+  }
+  function bank(c) {
+    const weeks = weeklyEarned(c);
+    const earned = weeks.reduce((t, w) => t + w.pts, 0);
+    const spent = c.spent.reduce((t, x) => t + x.cost, 0);
+    return { weeks, earned, spent, balance: earned - spent };
+  }
+  const activeGoal = c => c.goals.find(g => !g.done) || null;
+  const fmtFR = ds => { const [y, m, d] = ds.split('-'); return `${d}/${m}/${y}`; };
 
   /* ------------------------------------------------------------------ *
    *  Vues
@@ -299,6 +352,7 @@
         <h3 class="s-title">Paliers de récompense (total de la semaine)</h3>
         ${tiers}
         <button class="btn ghost" data-action="add-tier" data-child="${c.id}">+ Ajouter un palier</button>
+        ${goalsHtml(c)}
         ${state.settings.children.length > 1 ? `<p><button class="btn danger" data-action="del-child" data-child="${c.id}">Supprimer ${esc(c.name)}</button></p>` : ''}
       </section>`;
     }).join('');
@@ -316,6 +370,14 @@
         <p class="hint">Par défaut du lundi au vendredi : le bilan donne la récompense du week-end.</p>
       </section>
       <section class="card">
+        <h3 class="s-title" style="margin-top:0">Code parent 🔒</h3>
+        <p class="hint">Code à 4 chiffres demandé pour ouvrir les Réglages et valider une récompense. C’est un verrou simple contre les enfants, pas une protection de données sensibles.</p>
+        <div class="row-actions">
+          <input id="new-pin" class="in" style="max-width:150px" type="password" inputmode="numeric" maxlength="4" pattern="[0-9]*" placeholder="Nouveau code" autocomplete="off" aria-label="Nouveau code à 4 chiffres">
+          <button class="btn" data-action="set-pin">Changer le code</button>
+        </div>
+      </section>
+      <section class="card">
         <h3 class="s-title" style="margin-top:0">Sauvegarde</h3>
         <p class="hint">Les données sont stockées uniquement sur cet appareil. Exportez régulièrement une sauvegarde, ou utilisez-la pour passer d’un téléphone à l’autre.</p>
         <div class="row-actions">
@@ -329,16 +391,117 @@
       </section>`;
   }
 
+  function cagnotteView() {
+    const c = curChild();
+    const b = bank(c);
+    const bal = Math.max(0, b.balance);
+    const g = activeGoal(c);
+    const cur = b.weeks.length ? b.weeks[b.weeks.length - 1].pts : 0;
+
+    let goal;
+    if (!g) {
+      goal = '<section class="card"><p class="note" style="margin:0">Aucun objectif en cours. Un parent peut en ajouter dans Réglages 🔒.</p></section>';
+    } else {
+      const pct = Math.min(100, (bal / g.target) * 100);
+      const reached = bal >= g.target;
+      const left = g.target - bal;
+      const past = b.weeks.slice(0, -1).slice(-4);
+      const avg = past.length ? past.reduce((t, w) => t + w.pts, 0) / past.length : 0;
+      const wk = avg > 0 ? Math.ceil(left / avg) : 0;
+      const msg = reached ? '🎉 Objectif atteint, bravo !'
+        : `Encore ${left} point${plural(left)}${avg > 0 ? ` · environ ${wk} semaine${plural(wk)} à ce rythme` : ''}`;
+      goal = `
+      <section class="card goal ${reached ? 'reached' : ''}">
+        <div class="goal-head">
+          <span class="goal-emoji">${esc(g.emoji)}</span>
+          <div><strong>${esc(g.name)}</strong><div class="hint" style="margin:0">Objectif : ${g.target} points</div></div>
+        </div>
+        <div class="bar"><div class="bar-fill" style="width:${pct}%"></div></div>
+        <p class="score-msg">${msg}</p>
+        ${reached ? `<p><button class="btn" data-action="validate-goal" data-child="${c.id}">Valider la récompense 🔒</button></p>` : ''}
+      </section>`;
+    }
+
+    const next = c.goals.filter(x => !x.done).slice(1);
+    const upcoming = next.length ? `
+      <section class="card">
+        <h3 class="s-title" style="margin-top:0">Prochains objectifs</h3>
+        ${next.map(x => `<div class="row-item"><span>${esc(x.emoji)} ${esc(x.name)}</span><strong>${x.target} pts</strong></div>`).join('')}
+      </section>` : '';
+
+    const got = [...c.spent].reverse();
+    const history = got.length ? `
+      <section class="card">
+        <h3 class="s-title" style="margin-top:0">Récompenses obtenues</h3>
+        ${got.map(x => `<div class="row-item"><span>${esc(x.emoji)} ${esc(x.name)}</span><span class="hint" style="margin:0">${fmtFR(x.date)} · −${x.cost} pts</span></div>`).join('')}
+      </section>` : '';
+
+    return `
+      <header class="top"><h1>💰 Cagnotte</h1></header>
+      ${childTabs()}
+      <section class="card" style="margin-top:14px">
+        <div class="card-head">
+          <h2>${esc(c.emoji)} ${esc(c.name)}</h2>
+          <div class="total">${bal} <small>pts</small></div>
+        </div>
+        <p class="hint" style="margin-bottom:0">Gagnés : ${b.earned} · Dépensés : ${b.spent} · Cette semaine : +${cur} (provisoire)</p>
+      </section>
+      ${goal}
+      ${upcoming}
+      ${history}
+      <p class="note">Les points positifs de chaque semaine s’ajoutent à la cagnotte. Une mauvaise semaine compte 0 : la cagnotte ne baisse jamais.</p>`;
+  }
+
+  function goalsHtml(c) {
+    const open = c.goals.filter(g => !g.done);
+    const rows = open.map((g, i) => `
+        <div class="s-tier">
+          <input class="in emo" type="text" value="${esc(g.emoji)}" data-bind="goal|${c.id}|${g.id}|emoji" aria-label="Emoji de l’objectif">
+          <input class="in grow" type="text" value="${esc(g.name)}" data-bind="goal|${c.id}|${g.id}|name" aria-label="Nom de l’objectif">
+          <label class="num"><input type="number" min="1" max="9999" inputmode="numeric" value="${g.target}" data-bind="goal|${c.id}|${g.id}|target" aria-label="Points nécessaires"><span>pts</span></label>
+          <button class="icon-btn" data-action="goal-up" data-child="${c.id}" data-goal="${g.id}" ${i === 0 ? 'disabled' : ''} aria-label="Rendre prioritaire">↑</button>
+          <button class="icon-btn danger" data-action="del-goal" data-child="${c.id}" data-goal="${g.id}" aria-label="Supprimer l’objectif">🗑</button>
+        </div>`).join('');
+    return `
+        <h3 class="s-title">Objectifs de la cagnotte <small class="hint">(le premier de la liste est en cours)</small></h3>
+        ${rows || '<p class="hint">Aucun objectif en cours.</p>'}
+        <button class="btn ghost" data-action="add-goal" data-child="${c.id}">+ Ajouter un objectif</button>`;
+  }
+
+  function pinOverlay() {
+    const p = ui.pin;
+    if (!p) return '';
+    const shake = p.shake; p.shake = false;
+    const dots = [0, 1, 2, 3].map(i => `<span class="dot ${i < p.value.length ? 'on' : ''}"></span>`).join('');
+    const digit = n => `<button class="key" data-action="pin-key" data-k="${n}" aria-label="${n}">${n}</button>`;
+    return `
+      <div class="pin-wrap" role="dialog" aria-modal="true" aria-label="Code parent">
+        <div class="pin ${shake ? 'shake' : ''}">
+          <h2 style="margin:0">🔒 Code parent</h2>
+          <div class="dots" aria-hidden="true">${dots}</div>
+          <p class="pin-msg" role="alert">${esc(p.msg || '')}</p>
+          <div class="keypad">
+            ${[1, 2, 3, 4, 5, 6, 7, 8, 9].map(digit).join('')}
+            <button class="key small" data-action="pin-cancel">Annuler</button>
+            ${digit(0)}
+            <button class="key small" data-action="pin-del" aria-label="Effacer">⌫</button>
+          </div>
+        </div>
+      </div>`;
+  }
+
   function nav() {
     const item = (t, icon, label) =>
       `<button class="${ui.tab === t ? 'on' : ''}" data-action="tab" data-tab="${t}" aria-label="${label}"><span>${icon}</span>${label}</button>`;
-    return `<nav class="nav"><div class="nav-inner">${item('day', '📅', 'Jour')}${item('week', '🏆', 'Semaine')}${item('settings', '⚙️', 'Réglages')}</div></nav>`;
+    return `<nav class="nav"><div class="nav-inner">${item('day', '📅', 'Jour')}${item('week', '🏆', 'Semaine')}${item('cagnotte', '💰', 'Cagnotte')}${item('settings', ui.unlocked ? '⚙️' : '🔒', 'Réglages')}</div></nav>`;
   }
 
   function render() {
     const y = window.scrollY;
-    const view = ui.tab === 'week' ? weekView() : ui.tab === 'settings' ? settingsView() : dayView();
-    document.getElementById('app').innerHTML = `<main class="view">${view}</main>${nav()}`;
+    if (ui.tab === 'settings' && !ui.unlocked) ui.tab = 'day';
+    const view = ui.tab === 'week' ? weekView() : ui.tab === 'cagnotte' ? cagnotteView()
+      : ui.tab === 'settings' ? settingsView() : dayView();
+    document.getElementById('app').innerHTML = `<main class="view">${view}</main>${nav()}${pinOverlay()}`;
     window.scrollTo(0, y);
   }
 
@@ -386,21 +549,81 @@
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   }
 
+  /* Code parent */
+  function lockInfo() {
+    try { return JSON.parse(localStorage.getItem(LOCK_KEY)) || { fails: 0, until: 0 }; }
+    catch (e) { return { fails: 0, until: 0 }; }
+  }
+  function setLock(o) { try { localStorage.setItem(LOCK_KEY, JSON.stringify(o)); } catch (e) { /* ignoré */ } }
+  const pinOk = v => hashPin(v) === (state.settings.pinHash || DEFAULT_PIN_HASH);
+
+  function validateGoal(cid) {
+    const c = getChild(cid);
+    const g = c && activeGoal(c);
+    if (!g || bank(c).balance < g.target) return null;
+    g.done = true;
+    g.doneDate = today();
+    c.spent.push({ id: 's' + uid(), date: today(), name: g.name, emoji: g.emoji, cost: g.target });
+    return c;
+  }
+
+  // Renvoie l'enfant à célébrer, le cas échéant.
+  function handlePin(a, el) {
+    const p = ui.pin;
+    if (!p) return null;
+    if (a === 'pin-cancel') { ui.pin = null; return null; }
+    if (a === 'pin-del') { p.value = p.value.slice(0, -1); p.msg = ''; return null; }
+    const lk = lockInfo();
+    if (Date.now() < lk.until) { p.value = ''; p.msg = 'Trop d’essais, patientez un peu'; return null; }
+    if (p.value.length >= 4) return null;
+    p.value += el.dataset.k;
+    p.msg = '';
+    if (p.value.length < 4) return null;
+    if (pinOk(p.value)) {
+      setLock({ fails: 0, until: 0 });
+      const n = p.next;
+      ui.pin = null;
+      if (n.type === 'settings') { ui.tab = 'settings'; ui.unlocked = true; return null; }
+      if (n.type === 'validate') return validateGoal(n.child);
+      return null;
+    }
+    const fails = (lk.fails || 0) + 1;
+    if (fails >= 5) { setLock({ fails: 0, until: Date.now() + 60000 }); p.msg = 'Trop d’essais : patientez 1 minute'; }
+    else { setLock({ fails, until: 0 }); p.msg = 'Code incorrect'; }
+    p.value = '';
+    p.shake = true;
+    return null;
+  }
+
   document.addEventListener('click', e => {
     const el = e.target.closest('[data-action]');
     if (!el) return;
     const a = el.dataset.action;
     let celebrateFor = null;
 
+    if (a.startsWith('pin-')) {
+      const done = handlePin(a, el);
+      save(); render();
+      if (done) celebrate(done);
+      return;
+    }
+
     switch (a) {
-      case 'tab': ui.tab = el.dataset.tab; break;
+      case 'tab': {
+        const t = el.dataset.tab;
+        if (t === 'settings' && !ui.unlocked) { ui.pin = { value: '', msg: '', next: { type: 'settings' } }; break; }
+        ui.tab = t;
+        if (t !== 'settings') ui.unlocked = false;
+        break;
+      }
+      case 'validate-goal': ui.pin = { value: '', msg: '', next: { type: 'validate', child: el.dataset.child } }; break;
       case 'child': ui.childId = el.dataset.id; break;
       case 'day-shift': ui.date = fmt(addDays(parse(ui.date), Number(el.dataset.n))); break;
       case 'day-today': ui.date = today(); break;
       case 'week-shift': ui.weekRef = fmt(addDays(parse(ui.weekRef), 7 * Number(el.dataset.n))); break;
       case 'week-today': ui.weekRef = today(); break;
       case 'goto-day':
-        ui.childId = el.dataset.child; ui.date = el.dataset.date; ui.tab = 'day'; break;
+        ui.childId = el.dataset.child; ui.date = el.dataset.date; ui.tab = 'day'; ui.unlocked = false; break;
 
       case 'rate': {
         const c = curChild();
@@ -452,7 +675,7 @@
         const id = 'c' + uid();
         state.settings.children.push({
           id, name: 'Enfant', age: 8, emoji: '🙂', dailyGoal: 8,
-          tasks: defaultTasks(), tiers: defaultTiers(30, 40, 48)
+          tasks: defaultTasks(), tiers: defaultTiers(30, 40, 48), goals: defaultGoals(), spent: []
         });
         break;
       }
@@ -469,6 +692,33 @@
         break;
       }
 
+      case 'add-goal': {
+        const c = getChild(el.dataset.child);
+        c.goals.push({ id: 'g' + uid(), name: 'Nouvel objectif', emoji: '🎁', target: 150, done: false });
+        break;
+      }
+      case 'del-goal': {
+        const c = getChild(el.dataset.child);
+        const g = c.goals.find(x => x.id === el.dataset.goal);
+        if (!g || !confirm(`Supprimer l’objectif « ${g.name} » ?`)) return;
+        c.goals = c.goals.filter(x => x.id !== g.id);
+        break;
+      }
+      case 'goal-up': {
+        const c = getChild(el.dataset.child);
+        const i = c.goals.findIndex(x => x.id === el.dataset.goal);
+        let j = i - 1;
+        while (j >= 0 && c.goals[j].done) j--;
+        if (i > 0 && j >= 0) { const t = c.goals[i]; c.goals[i] = c.goals[j]; c.goals[j] = t; }
+        break;
+      }
+      case 'set-pin': {
+        const v = (document.getElementById('new-pin').value || '').trim();
+        if (!/^\d{4}$/.test(v)) { toast('Le code doit avoir 4 chiffres'); return; }
+        state.settings.pinHash = hashPin(v);
+        save(); render(); toast('Code modifié ✔');
+        return;
+      }
       case 'export':
         download(`bons-points-${today()}.json`, JSON.stringify(state, null, 2));
         return;
@@ -503,7 +753,7 @@
         try {
           const s = JSON.parse(reader.result);
           if (!isValid(s)) throw new Error('format');
-          state = s;
+          state = normalize(s);
           ui.childId = state.settings.children[0].id;
           save(); render(); toast('Sauvegarde importée ✔');
         } catch (err) { toast('Fichier invalide'); }
@@ -532,6 +782,11 @@
       if (p[3] === 'min') t.min = num(999);
       else if (p[3] === 'emoji') t.emoji = el.value.trim() || '🎁';
       else t[p[3]] = el.value.trim();
+    } else if (p[0] === 'goal') {
+      const c = getChild(p[1]); const g = c && c.goals.find(x => x.id === p[2]); if (!g) return;
+      if (p[3] === 'target') g.target = Math.max(1, num(9999));
+      else if (p[3] === 'emoji') g.emoji = el.value.trim() || '🎁';
+      else g.name = el.value.trim() || g.name;
     } else if (p[0] === 'day') {
       const i = Number(p[1]);
       const set = new Set(state.settings.countedDays);
@@ -539,6 +794,15 @@
       state.settings.countedDays = [...set].sort((x, y) => x - y);
     }
     save();
+  });
+
+  // Les Réglages se reverrouillent dès que l'application quitte l'écran.
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden && (ui.unlocked || ui.pin)) {
+      ui.unlocked = false; ui.pin = null;
+      if (ui.tab === 'settings') ui.tab = 'day';
+      render();
+    }
   });
 
   render();

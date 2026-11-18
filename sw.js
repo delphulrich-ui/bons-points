@@ -1,6 +1,7 @@
-// Service worker : fonctionnement hors ligne (cache de l'application).
-// Incrémenter CACHE à chaque mise à jour des fichiers pour forcer le rafraîchissement.
-const CACHE = 'bonspoints-v1';
+// Service worker : fonctionnement hors ligne.
+// Réseau d'abord (les mises à jour arrivent tout de suite), cache en secours hors connexion.
+// Incrémenter CACHE à chaque mise à jour des fichiers.
+const CACHE = 'bonspoints-v2';
 const ASSETS = [
   './',
   'index.html',
@@ -25,21 +26,18 @@ self.addEventListener('activate', e => {
   );
 });
 
-// Cache d'abord, mise à jour en arrière-plan.
 self.addEventListener('fetch', e => {
   if (e.request.method !== 'GET') return;
+  const sameOrigin = new URL(e.request.url).origin === location.origin;
   e.respondWith(
-    caches.match(e.request).then(cached => {
-      const network = fetch(e.request)
-        .then(res => {
-          if (res && res.ok && new URL(e.request.url).origin === location.origin) {
-            const copy = res.clone();
-            caches.open(CACHE).then(c => c.put(e.request, copy));
-          }
-          return res;
-        })
-        .catch(() => cached);
-      return cached || network;
-    })
+    fetch(e.request, sameOrigin ? { cache: 'no-cache' } : undefined)
+      .then(res => {
+        if (sameOrigin && res && res.ok) {
+          const copy = res.clone();
+          caches.open(CACHE).then(c => c.put(e.request, copy));
+        }
+        return res;
+      })
+      .catch(() => caches.match(e.request, { ignoreSearch: true }).then(hit => hit || caches.match('./')))
   );
 });
