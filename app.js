@@ -121,7 +121,7 @@
     if (all !== lastAll) { lastAll = all; scheduleSync(); }
   }
 
-  const ui = { tab: 'day', childId: state.settings.children[0].id, date: today(), weekRef: today(), unlocked: false, pin: null };
+  const ui = { tab: 'day', childId: state.settings.children[0].id, date: today(), weekRef: today(), weekMode: 'bilan', evoWeeks: 8, unlocked: false, pin: null };
 
   const getChild = id => state.settings.children.find(c => c.id === id);
   const curChild = () => getChild(ui.childId) || state.settings.children[0];
@@ -195,6 +195,220 @@
   }
   const activeGoal = c => c.goals.find(g => !g.done) || null;
   const fmtFR = ds => { const [y, m, d] = ds.split('-'); return `${d}/${m}/${y}`; };
+
+  /* ------------------------------------------------------------------ *
+   *  Statistiques et graphiques (SVG, sans dépendance)
+   *  Les statistiques portent sur les jours comptés, comme le total de la semaine :
+   *  bons points − mauvais points = total.
+   * ------------------------------------------------------------------ */
+  const PAL = i => `var(--p${(i % 8) + 1})`;
+  const countedDates = mon => state.settings.countedDays.map(i => fmt(addDays(mon, i)));
+  const shortDate = ds => { const p = ds.split('-'); return `${p[2]}/${p[1]}`; };
+  const signed = n => (n > 0 ? '+' : n < 0 ? '−' : '') + Math.abs(n);
+
+  function stats(c, dates) {
+    const per = c.tasks.map(k => ({ label: k.label, done: 0, missed: 0, gained: 0, lost: 0 }));
+    let gained = 0, lost = 0, rated = 0, goals = 0;
+    for (const ds of dates) {
+      if (!dayRated(c, ds)) continue;
+      rated++;
+      if (goalReached(c, ds)) goals++;
+      c.tasks.forEach((k, i) => {
+        const v = getV(ds, c.id, k.id);
+        if (v === 1) { per[i].done++; per[i].gained += k.ok; gained += k.ok; }
+        else if (v === -1) { per[i].missed++; per[i].lost += k.ko; lost += k.ko; }
+      });
+    }
+    return { gained, lost, net: gained - lost, rated, goals, per };
+  }
+
+  function goalStreak(c) {
+    const cs = state.settings.countedDays;
+    let n = 0;
+    for (let d = new Date(), i = 0; i < 400; d = addDays(d, -1), i++) {
+      if (!cs.includes(dow(d))) continue;
+      const ds = fmt(d);
+      if (goalReached(c, ds)) n++;
+      else if (ds === today() && !dayRated(c, ds)) continue;
+      else break;
+    }
+    return n;
+  }
+
+  function donut(slices, big, small, label) {
+    const R = 42, C = 2 * Math.PI * R;
+    const live = slices.filter(s => s.v > 0);
+    const tot = live.reduce((t, s) => t + s.v, 0);
+    let off = 0;
+    const arcs = tot ? live.map(s => {
+      const len = (s.v / tot) * C;
+      const el = `<circle cx="60" cy="60" r="${R}" fill="none" style="stroke:${s.color}" stroke-width="18" stroke-dasharray="${len.toFixed(2)} ${(C - len).toFixed(2)}" stroke-dashoffset="${(-off).toFixed(2)}" transform="rotate(-90 60 60)"/>`;
+      off += len;
+      return el;
+    }).join('') : `<circle cx="60" cy="60" r="${R}" fill="none" style="stroke:var(--line)" stroke-width="18"/>`;
+    return `<svg class="donut" viewBox="0 0 120 120" role="img" aria-label="${esc(label)}">${arcs}
+      <text x="60" y="61" text-anchor="middle" class="d-big">${big}</text>
+      <text x="60" y="76" text-anchor="middle" class="d-small">${esc(small)}</text></svg>`;
+  }
+
+  const legend = items => `<ul class="legend">${items.map(i =>
+    `<li><span class="sw" style="background:${i.color}"></span><span class="lg-l">${esc(i.label)}</span><strong>${i.value}</strong></li>`).join('')}</ul>`;
+
+  // Barres des totaux hebdomadaires, avec les paliers en pointillés.
+  function weeksChart(c, weeks) {
+    const W = 320, H = 180, L = 30, R = 6, T = 14, B = 22;
+    const ts = [...c.tiers].sort((a, b) => a.min - b.min);
+    const vals = weeks.map(w => w.total);
+    const hi = Math.max(1, ...vals, ...ts.map(t => t.min));
+    const lo = Math.min(0, ...vals);
+    const y = v => T + ((hi - v) / (hi - lo)) * (H - T - B);
+    const bw = (W - L - R) / weeks.length;
+    const step = Math.ceil(weeks.length / 8);
+    const lines = ts.map(t => `<line x1="${L}" x2="${W - R}" y1="${y(t.min)}" y2="${y(t.min)}" class="ch-tier"/>
+      <text x="${L - 4}" y="${y(t.min) + 3}" text-anchor="end" class="ch-e">${esc(t.emoji)}</text>`).join('');
+    const bars = weeks.map((w, i) => {
+      const x = L + i * bw + bw * 0.15, wd = bw * 0.7;
+      const top = y(Math.max(w.total, 0)), h = Math.max(Math.abs(y(w.total) - y(0)), w.rated ? 1.5 : 0);
+      const fill = w.got ? 'var(--gold)' : w.total >= 0 ? 'var(--primary)' : 'var(--ko)';
+      const val = w.rated && bw >= 18 ? `<text x="${x + wd / 2}" y="${(w.total >= 0 ? top - 3 : top + h + 9)}" text-anchor="middle" class="ch-v">${w.total}</text>` : '';
+      const lab = i % step === 0 || i === weeks.length - 1 ? `<text x="${x + wd / 2}" y="${H - 7}" text-anchor="middle" class="ch-t">${shortDate(w.mon)}</text>` : '';
+      return `<rect x="${x.toFixed(1)}" y="${(w.total >= 0 ? top : y(0)).toFixed(1)}" width="${wd.toFixed(1)}" height="${h.toFixed(1)}" rx="3" style="fill:${fill}" opacity="${w.partial ? .55 : 1}"/>${val}${lab}`;
+    }).join('');
+    return `<svg class="chart" viewBox="0 0 ${W} ${H}" role="img" aria-label="Total de points par semaine">
+      <line x1="${L}" x2="${W - R}" y1="${y(0)}" y2="${y(0)}" class="ch-axis"/>${lines}${bars}</svg>`;
+  }
+
+  // Points de chaque jour avec l'objectif quotidien en pointillés.
+  function daysChart(c, dates) {
+    const W = 320, H = 130, L = 30, R = 6, T = 12, B = 20;
+    const vals = dates.map(ds => (dayRated(c, ds) ? dayPoints(c, ds) : null));
+    const hi = Math.max(1, dayMax(c), c.dailyGoal);
+    const lo = Math.min(0, ...vals.filter(v => v !== null));
+    const y = v => T + ((hi - v) / (hi - lo)) * (H - T - B);
+    const bw = (W - L - R) / dates.length;
+    const cs = state.settings.countedDays;
+    const bars = dates.map((ds, i) => {
+      const x = L + i * bw + bw * 0.12, wd = Math.max(bw * 0.76, 1);
+      const d = parse(ds), v = vals[i];
+      const lab = dow(d) === 0 ? `<text x="${x}" y="${H - 6}" class="ch-t">${shortDate(ds)}</text>` : '';
+      if (v === null) return lab;
+      const fill = v >= c.dailyGoal ? 'var(--ok)' : v >= 0 ? 'var(--primary)' : 'var(--ko)';
+      const top = v >= 0 ? y(v) : y(0), h = Math.max(Math.abs(y(v) - y(0)), 1.5);
+      return `<rect x="${x.toFixed(1)}" y="${top.toFixed(1)}" width="${wd.toFixed(1)}" height="${h.toFixed(1)}" rx="1.5" style="fill:${fill}" opacity="${cs.includes(dow(d)) ? 1 : .4}"/>${lab}`;
+    }).join('');
+    return `<svg class="chart" viewBox="0 0 ${W} ${H}" role="img" aria-label="Points par jour">
+      <line x1="${L}" x2="${W - R}" y1="${y(0)}" y2="${y(0)}" class="ch-axis"/>
+      <line x1="${L}" x2="${W - R}" y1="${y(c.dailyGoal)}" y2="${y(c.dailyGoal)}" class="ch-tier"/>
+      <text x="${L - 4}" y="${y(c.dailyGoal) + 3}" text-anchor="end" class="ch-t">${c.dailyGoal}</text>${bars}</svg>`;
+  }
+
+  function taskPies(c, st) {
+    const g = st.per.map((p, i) => ({ v: p.gained, color: PAL(i), label: p.label, value: `+${p.gained}` })).filter(x => x.v > 0);
+    const l = st.per.map((p, i) => ({ v: p.lost, color: PAL(i), label: p.label, value: `−${p.lost}` })).filter(x => x.v > 0);
+    const side = (title, items, big, empty) => `<div class="pie-col"><h3>${title}</h3>
+      ${items.length ? donut(items, big, 'pts', title) + legend(items) : `<p class="hint">${empty}</p>`}</div>`;
+    return `<div class="pies">${side('Points gagnés', g, `+${st.gained}`, 'Aucun point gagné sur la période.')}
+      ${side('Points perdus', l, `−${st.lost}`, 'Aucun point perdu, bravo 👏')}</div>`;
+  }
+
+  function taskRates(st) {
+    return st.per.map(p => {
+      const n = p.done + p.missed;
+      const pct = n ? Math.round((p.done / n) * 100) : null;
+      return `<div class="rate"><div class="rate-top"><span>${esc(p.label)}</span><strong>${pct === null ? '–' : pct + ' %'}</strong></div>
+        <div class="rbar">${n ? `<i class="ok" style="width:${pct}%"></i><i class="ko" style="width:${100 - pct}%"></i>` : ''}</div>
+        <small>${p.done} ✔ · ${p.missed} ✖${p.lost ? ` · −${p.lost} pt${plural(p.lost)}` : ''}</small></div>`;
+    }).join('');
+  }
+
+  function evoView() {
+    const c = curChild();
+    const cur = monday(new Date());
+    const logged = Object.keys(state.log).sort();
+    const n = ui.evoWeeks || (logged.length ? Math.min(52, Math.round((cur - monday(parse(logged[0]))) / 6048e5) + 1) : 1);
+
+    const weeks = [];
+    for (let i = n - 1; i >= 0; i--) {
+      const mon = addDays(cur, -7 * i);
+      const s = stats(c, countedDates(mon));
+      weeks.push({ mon: fmt(mon), total: s.net, rated: s.rated, got: tierState(c, s.net).got, partial: i === 0 });
+    }
+    const dates = weeks.flatMap(w => countedDates(parse(w.mon)));
+    const st = stats(c, dates);
+    const withData = weeks.filter(w => w.rated);
+
+    let prevTile = '';
+    if (ui.evoWeeks) {
+      const prevDates = [];
+      for (let i = n; i < 2 * n; i++) prevDates.push(...countedDates(addDays(cur, -7 * i)));
+      const prev = stats(c, prevDates);
+      if (prev.rated && st.rated) {
+        const d = st.net - prev.net;
+        prevTile = `<div class="tile"><span>Période précédente</span><strong class="${d > 0 ? 'up' : d < 0 ? 'down' : ''}">${d > 0 ? '▲' : d < 0 ? '▼' : '＝'} ${signed(d)}</strong><small>${prev.net} pts avant</small></div>`;
+      }
+    }
+    const best = withData.length ? withData.reduce((a, b) => (b.total > a.total ? b : a)) : null;
+    const avg = withData.length ? Math.round((st.net / withData.length) * 10) / 10 : 0;
+    const streak = goalStreak(c);
+
+    const dayCount = Math.min(n, 8) * 7;
+    const days = [];
+    for (let i = dayCount - 1; i >= 0; i--) days.push(fmt(addDays(new Date(), -i)));
+
+    const body = st.rated ? `
+      <section class="card">
+        <div class="tiles">
+          <div class="tile"><span>Total</span><strong>${st.net}</strong><small>pts sur ${n} sem.</small></div>
+          <div class="tile"><span>Moyenne</span><strong>${avg}</strong><small>pts / semaine</small></div>
+          <div class="tile"><span>Meilleure semaine</span><strong>${best.total}</strong><small>du ${shortDate(best.mon)}</small></div>
+          <div class="tile"><span>Objectif du jour</span><strong>${Math.round((st.goals / st.rated) * 100)} %</strong><small>${st.goals} jour${plural(st.goals)} sur ${st.rated}</small></div>
+          <div class="tile"><span>Série en cours</span><strong>${streak}</strong><small>jour${plural(streak)} d’affilée ⭐</small></div>
+          ${prevTile}
+        </div>
+      </section>
+      <section class="card">
+        <h2 class="c-title">Points par semaine</h2>
+        ${weeksChart(c, weeks)}
+        <p class="hint">Barre dorée : palier atteint. Pointillés : paliers (${c.tiers.length ? [...c.tiers].sort((a, b) => a.min - b.min).map(t => esc(t.emoji) + ' ' + t.min).join(', ') : 'aucun'}). Barre pâle : semaine en cours.</p>
+      </section>
+      <section class="card">
+        <h2 class="c-title">Points par jour</h2>
+        ${daysChart(c, days)}
+        <p class="hint">Vert : objectif du jour atteint (${c.dailyGoal} pts). Rouge : journée négative. Pâle : jour non compté.</p>
+      </section>
+      <section class="card">
+        <h2 class="c-title">Bons et mauvais points</h2>
+        <div class="split">
+          ${donut([{ v: st.gained, color: 'var(--ok)' }, { v: st.lost, color: 'var(--ko)' }], signed(st.net), 'net', 'Répartition des bons et mauvais points')}
+          ${legend([
+            { color: 'var(--ok)', label: 'Bons points', value: `+${st.gained}` },
+            { color: 'var(--ko)', label: 'Mauvais points', value: `−${st.lost}` }
+          ])}
+        </div>
+      </section>
+      <section class="card">
+        <h2 class="c-title">D’où viennent les points ?</h2>
+        ${taskPies(c, st)}
+      </section>
+      <section class="card">
+        <h2 class="c-title">Réussite par tâche</h2>
+        ${taskRates(st)}
+      </section>` : `
+      <section class="card"><p class="hint">Pas encore de journée notée sur cette période pour ${esc(c.name)}. Les graphiques apparaîtront dès les premiers points.</p></section>`;
+
+    return `
+      <header class="top"><h1>📈 Évolution des points</h1></header>
+      ${weekModes()}
+      ${childTabs()}
+      <div class="chips" role="group" aria-label="Période">${[4, 8, 12, 0].map(v =>
+        `<button class="pchip ${ui.evoWeeks === v ? 'on' : ''}" data-action="evo-weeks" data-n="${v}">${v ? v + ' sem.' : 'Tout'}</button>`).join('')}</div>
+      ${body}
+      <p class="note">Statistiques calculées sur les jours comptés (${state.settings.countedDays.length ? [...state.settings.countedDays].sort().map(i => DAY_SHORT[i]).join(', ') : 'aucun'}).</p>`;
+  }
+
+  const weekModes = () => `<div class="seg2" role="tablist">
+    <button class="${ui.weekMode === 'bilan' ? 'on' : ''}" data-action="week-mode" data-mode="bilan">Bilan</button>
+    <button class="${ui.weekMode === 'evol' ? 'on' : ''}" data-action="week-mode" data-mode="evol">Évolution</button></div>`;
 
   /* ------------------------------------------------------------------ *
    *  Vues
@@ -295,6 +509,26 @@
       verdict = '';
     }
 
+    const st = stats(c, countedDates(mon));
+    const prev = stats(c, countedDates(addDays(mon, -7)));
+    let trend = '';
+    if (st.rated && prev.rated) {
+      const d = st.net - prev.net;
+      trend = `<p class="trend ${d > 0 ? 'up' : d < 0 ? 'down' : ''}">${d === 0 ? '＝ Identique à la semaine précédente' : `${d > 0 ? '▲' : '▼'} ${signed(d)} pt${plural(d)} par rapport à la semaine précédente`} (${prev.net} pts)</p>`;
+    }
+    const weak = st.per.filter(p => p.lost > 0).sort((x, y) => y.lost - x.lost);
+    const split = st.rated ? `
+        <div class="split">
+          ${donut([{ v: st.gained, color: 'var(--ok)' }, { v: st.lost, color: 'var(--ko)' }], signed(st.net), 'net', `Bons et mauvais points de ${c.name}`)}
+          ${legend([
+            { color: 'var(--ok)', label: 'Bons points', value: `+${st.gained}` },
+            { color: 'var(--ko)', label: 'Mauvais points', value: `−${st.lost}` },
+            { color: 'var(--line)', label: 'Objectif atteint', value: `${st.goals} / ${st.rated} j` }
+          ])}
+        </div>
+        ${weak.length ? `<p class="hint">À améliorer : ${weak.map(p => `${esc(p.label)} (−${p.lost})`).join(', ')}</p>` : ''}
+        ${trend}` : '<p class="hint">Aucune journée notée cette semaine.</p>';
+
     return `
       <section class="card">
         <div class="card-head">
@@ -304,10 +538,12 @@
         <div class="week-days">${cells}</div>
         ${bar}
         ${verdict}
+        ${split}
       </section>`;
   }
 
   function weekView() {
+    if (ui.weekMode === 'evol') return evoView();
     const mon = monday(parse(ui.weekRef));
     const sun = addDays(mon, 6);
     const cs = state.settings.countedDays;
@@ -318,6 +554,7 @@
 
     return `
       <header class="top"><h1>🏆 Bilan de la semaine</h1></header>
+      ${weekModes()}
       <div class="datebar">
         <button class="icon-btn" data-action="week-shift" data-n="-1" aria-label="Semaine précédente">‹</button>
         <div class="date-label">
@@ -837,6 +1074,8 @@
       case 'day-today': ui.date = today(); break;
       case 'week-shift': ui.weekRef = fmt(addDays(parse(ui.weekRef), 7 * Number(el.dataset.n))); break;
       case 'week-today': ui.weekRef = today(); break;
+      case 'week-mode': ui.weekMode = el.dataset.mode === 'evol' ? 'evol' : 'bilan'; break;
+      case 'evo-weeks': ui.evoWeeks = Number(el.dataset.n) || 0; break;
       case 'goto-day':
         ui.childId = el.dataset.child; ui.date = el.dataset.date; ui.tab = 'day'; ui.unlocked = false; break;
 
