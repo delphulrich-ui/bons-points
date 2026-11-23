@@ -123,9 +123,10 @@
     catch (e) { toast('Sauvegarde impossible sur cet appareil'); }
     const all = allSig();
     if (all !== lastAll) { lastAll = all; scheduleSync(); }
+    setTimeout(checkBadges, 0);
   }
 
-  const ui = { tab: 'day', childId: state.settings.children[0].id, date: today(), weekRef: today(), weekMode: 'bilan', evoWeeks: 8, unlocked: false, pin: null };
+  const ui = { tab: 'day', childId: state.settings.children[0].id, date: today(), weekRef: today(), weekMode: 'bilan', setMode: 'general', evoWeeks: 8, unlocked: false, pin: null };
 
   const getChild = id => state.settings.children.find(c => c.id === id);
   const curChild = () => getChild(ui.childId) || state.settings.children[0];
@@ -511,7 +512,233 @@
 
   const weekModes = () => `<div class="seg2" role="tablist">
     <button class="${ui.weekMode === 'bilan' ? 'on' : ''}" data-action="week-mode" data-mode="bilan">Bilan</button>
-    <button class="${ui.weekMode === 'evol' ? 'on' : ''}" data-action="week-mode" data-mode="evol">Évolution</button></div>`;
+    <button class="${ui.weekMode === 'evol' ? 'on' : ''}" data-action="week-mode" data-mode="evol">Évolution</button>
+    <button class="${ui.weekMode === 'badges' ? 'on' : ''}" data-action="week-mode" data-mode="badges">🏅 Badges</button></div>`;
+
+  /* ------------------------------------------------------------------ *
+   *  Badges : calculés à partir de l'historique, donc identiques sur tous les appareils.
+   *  Un niveau gagné ne se perd jamais : pour les séries, c'est le record qui compte.
+   *  Seuls les jours comptés (réglages) comptent ; les autres ne cassent pas une série.
+   * ------------------------------------------------------------------ */
+  const LEVELS = ['Bois', 'Pierre', 'Fer', 'Or', 'Émeraude', 'Diamant', 'Netherite'];
+  const SEEN_KEY = 'bonspoints.badges';
+
+  // task : mot-clé pour retrouver automatiquement la tâche liée (modifiable dans Réglages > Badges)
+  const BADGES = [
+    { id: 'serie', e: '🔥', name: 'Série de feu', desc: 'Jours d’affilée avec l’objectif du jour atteint', unit: 'jours', lv: [3, 5, 10, 20, 40, 80, 150] },
+    { id: 'dents', e: '🦷', name: 'Sourire éclatant', desc: 'Jours d’affilée avec la tâche réussie (matin et soir s’il y a deux coches)', unit: 'jours', task: /dent|brosse/i, lv: [3, 5, 10, 20, 30, 60, 100] },
+    { id: 'parfaite', e: '🌟', name: 'Journée parfaite', desc: 'Jours avec le score maximum', unit: 'jours', lv: [1, 3, 7, 15, 30, 60, 100] },
+    { id: 'sansfaute', e: '😇', name: 'Sans faute', desc: 'Jours d’affilée sans aucun ✖', unit: 'jours', lv: [2, 4, 7, 14, 30, 60, 100] },
+    { id: 'champion', e: '🏆', name: 'Semaine de champion', desc: 'Semaines terminées avec au moins le premier palier de récompense atteint', unit: 'semaines', lv: [1, 2, 4, 8, 16, 30, 52] },
+    { id: 'roi', e: '👑', name: 'Roi des paliers', desc: 'Semaines terminées au palier de récompense le plus haut', unit: 'semaines', lv: [1, 2, 3, 5, 10, 20, 40] },
+    { id: 'retour', e: '💪', name: 'Le retour du héros', desc: 'Objectif atteint le jour qui suit une journée sous l’objectif', unit: 'fois', lv: [1, 3, 5, 10, 20, 40, 75] },
+    { id: 'devoirs', e: '📚', name: 'Studieux', desc: 'Jours d’affilée avec la tâche réussie', unit: 'jours', task: /devoir/i, lv: [3, 5, 10, 20, 40, 80, 150] },
+    { id: 'entente', e: '🤝', name: 'Frères en or', desc: 'Jours d’affilée avec la tâche réussie', unit: 'jours', task: /entente|fr[eè]re/i, lv: [3, 5, 10, 20, 40, 80, 150] },
+    { id: 'chambre', e: '🛏️', name: 'Chambre nickel', desc: 'Nombre de fois où la tâche est réussie (total)', unit: 'fois', task: /chambre/i, lv: [5, 15, 30, 60, 100, 200, 365] },
+    { id: 'matinsoir', e: '🌅', name: 'Du matin au soir', desc: 'Jours où toutes les coches matin et soir sont validées', unit: 'jours', lv: [3, 7, 15, 30, 60, 100, 200] },
+    { id: 'chrono', e: '⏱️', name: 'Chrono-champion', desc: 'Tâches chronométrées réussies', unit: 'fois', lv: [5, 15, 30, 60, 120, 250, 500] },
+    { id: 'tirelire', e: '💰', name: 'Tirelire', desc: 'Points gagnés depuis le début (semaines terminées)', unit: 'pts', lv: [100, 250, 500, 1000, 2500, 5000, 10000] },
+    { id: 'chasseur', e: '🎁', name: 'Chasseur de récompenses', desc: 'Objectifs de la cagnotte validés', unit: 'objectifs', lv: [1, 2, 3, 5, 8, 12, 20] }
+  ];
+  const STREAKS = ['serie', 'dents', 'sansfaute', 'devoirs', 'entente'];
+
+  const badgeCfg = (c, b) => {
+    const o = (c.badges && c.badges[b.id]) || {};
+    return { on: o.on !== false, task: o.task || '', lv: Array.isArray(o.lv) && o.lv.length === 7 ? o.lv : b.lv };
+  };
+  const badgeTask = (c, b) => {
+    if (!b.task) return null;
+    const t = badgeCfg(c, b).task;
+    return c.tasks.find(k => k.id === t) || c.tasks.find(k => b.task.test(k.label)) || null;
+  };
+
+  function badgeStats(c) {
+    const t = today();
+    const cs = state.settings.countedDays;
+    const logged = Object.keys(state.log).sort();
+    const days = [];
+    if (logged.length) for (let d = parse(logged[0]); fmt(d) <= t; d = addDays(d, 1)) if (cs.includes(dow(d))) days.push(fmt(d));
+
+    const lastC = cs.length ? Math.max(...cs) : -1;
+    const weeks = [];
+    if (logged.length && lastC >= 0) {
+      for (let m = monday(parse(logged[0])); t > fmt(addDays(m, lastC)); m = addDays(m, 7)) {
+        weeks.push({ total: weekTotal(c, m), rated: countedDates(m).some(ds => dayRated(c, ds)) });
+      }
+    }
+    const mins = c.tiers.map(x => x.min);
+    const lowest = mins.length ? Math.min(...mins) : null;
+    const highest = mins.length ? Math.max(...mins) : null;
+
+    const allOk = (k, ds) => taskKeys(k).every(key => getV(ds, c.id, key) === 1);
+    const sumOk = k => logged.reduce((n, ds) => n + taskKeys(k).filter(key => getV(ds, c.id, key) === 1).length, 0);
+    // Série : le record compte ; un jour en cours (aujourd'hui) pas encore réussi ne casse pas la série.
+    const runs = cond => {
+      let run = 0, best = 0;
+      for (const ds of days) {
+        if (cond(ds)) { run++; if (run > best) best = run; } else if (ds !== t) run = 0;
+      }
+      return { v: best, cur: run };
+    };
+    const count = cond => ({ v: days.reduce((n, ds) => n + (cond(ds) ? 1 : 0), 0) });
+    const reached = ds => goalReached(c, ds);
+    const noKo = ds => dayRated(c, ds) && !c.tasks.some(k => taskKeys(k).some(key => getV(ds, c.id, key) === -1));
+    const slotTasks = c.tasks.filter(k => k.slots);
+    const timed = c.tasks.filter(k => k.timer > 0);
+
+    const out = {};
+    for (const b of BADGES) {
+      const cf = badgeCfg(c, b);
+      const k = b.task ? badgeTask(c, b) : null;
+      let r = { v: 0 }, hint = '';
+      if (b.task && !k) hint = 'Aucune tâche trouvée : choisissez-la dans Réglages › Badges.';
+      else if (b.id === 'matinsoir' && !slotTasks.length) hint = 'Activez « Matin et soir » sur une tâche dans Réglages.';
+      else if (b.id === 'chrono' && !timed.length) hint = 'Ajoutez un minuteur à une tâche dans Réglages.';
+      else {
+        switch (b.id) {
+          case 'serie': r = runs(reached); break;
+          case 'dents': case 'devoirs': case 'entente': r = runs(ds => allOk(k, ds)); break;
+          case 'sansfaute': r = runs(noKo); break;
+          case 'parfaite': r = count(ds => dayRated(c, ds) && dayMax(c) > 0 && dayPoints(c, ds) >= dayMax(c)); break;
+          case 'champion': r = { v: lowest === null ? 0 : weeks.filter(w => w.rated && w.total >= lowest).length }; break;
+          case 'roi': r = { v: highest === null ? 0 : weeks.filter(w => w.rated && w.total >= highest).length }; break;
+          case 'retour': {
+            let n = 0;
+            for (let i = 1; i < days.length; i++) if (dayRated(c, days[i - 1]) && !reached(days[i - 1]) && reached(days[i])) n++;
+            r = { v: n };
+            break;
+          }
+          case 'chambre': r = { v: sumOk(k) }; break;
+          case 'matinsoir': r = count(ds => slotTasks.every(x => allOk(x, ds))); break;
+          case 'chrono': r = { v: timed.reduce((n, x) => n + sumOk(x), 0) }; break;
+          case 'tirelire': r = { v: weeks.reduce((n, w) => n + Math.max(0, w.total), 0) }; break;
+          case 'chasseur': r = { v: c.goals.filter(g => g.done).length }; break;
+        }
+      }
+      const level = cf.lv.filter(x => r.v >= x).length;
+      out[b.id] = { b, cf, k, v: r.v, cur: r.cur === undefined ? null : r.cur, hint, level, next: cf.lv[level] === undefined ? null : cf.lv[level] };
+    }
+    return out;
+  }
+
+  function burst(emojis) {
+    for (let i = 0; i < 16; i++) {
+      const s = document.createElement('span');
+      s.className = 'fx';
+      s.textContent = emojis[i % emojis.length];
+      s.style.left = `${8 + Math.random() * 84}%`;
+      s.style.animationDelay = `${Math.random() * 0.4}s`;
+      document.body.appendChild(s);
+      setTimeout(() => s.remove(), 2200);
+    }
+  }
+
+  // Détecte les niveaux franchis (aucune célébration au premier lancement ni pour un nouvel enfant).
+  function checkBadges() {
+    let seen = null;
+    try { seen = JSON.parse(localStorage.getItem(SEEN_KEY)); } catch (e) { seen = null; }
+    // Réinitialisation / import (nouvelle « époque ») : on repart sans célébrer.
+    const first = !seen || typeof seen !== 'object' || seen._e !== state.epoch.id;
+    if (first) seen = { _e: state.epoch.id };
+    const ups = [];
+    for (const c of state.settings.children) {
+      const known = !first && !!seen[c.id];
+      const m = seen[c.id] || (seen[c.id] = {});
+      const st = badgeStats(c);
+      for (const b of BADGES) {
+        const lvl = st[b.id].level;
+        if (known && st[b.id].cf.on && lvl > (m[b.id] || 0)) ups.push({ c, b, lvl });
+        m[b.id] = Math.max(m[b.id] || 0, lvl);
+      }
+    }
+    try { localStorage.setItem(SEEN_KEY, JSON.stringify(seen)); } catch (e) { /* ignoré */ }
+    if (!ups.length) return;
+    const u = ups[0];
+    burst(['🏅', '⭐', '✨', '🎉', '🏆']);
+    toast(`${u.b.e} ${u.c.name} : ${u.b.name} niveau ${LEVELS[u.lvl - 1]} !${ups.length > 1 ? ` (+${ups.length - 1} autre${plural(ups.length - 1)})` : ''}`);
+  }
+
+  const medal = (b, level) => `<div class="medal lv${level}" aria-hidden="true"><span>${b.e}</span></div>`;
+  const pips = level => `<div class="pips" aria-hidden="true">${LEVELS.map((n, i) => `<i class="lv${i + 1} ${level > i ? 'on' : ''}" title="${n}"></i>`).join('')}</div>`;
+
+  function badgesView() {
+    const c = curChild();
+    const st = badgeStats(c);
+    const list = BADGES.map(b => st[b.id]).filter(x => x.cf.on);
+    const got = list.filter(x => x.level > 0).length;
+    const lvls = list.reduce((n, x) => n + x.level, 0);
+
+    const cards = list.map(x => {
+      const { b, level, next, v, cur, hint, k } = x;
+      const pct = next ? Math.min(100, (v / next) * 100) : 100;
+      const lab = level ? `Niveau ${LEVELS[level - 1]}` : 'À débloquer';
+      let prog;
+      if (hint) prog = `<p class="b-hint">${esc(hint)}</p>`;
+      else prog = `<div class="rbar b-bar"><i class="lv${Math.min(7, Math.max(1, next ? level + 1 : level))}" style="width:${pct}%"></i></div>
+          <small>${v}${next ? ` / ${next}` : ''} ${esc(b.unit)}${next ? ` · prochain : ${LEVELS[level]}` : ' · niveau maximum 🎉'}${cur !== null && STREAKS.includes(b.id) ? ` · série en cours : ${cur}` : ''}</small>`;
+      return `
+      <li class="badge ${level ? '' : 'locked'}">
+        ${medal(b, level)}
+        <div class="b-body">
+          <div class="b-top"><strong>${esc(b.name)}</strong><span class="b-lvl lv${level}">${lab}</span></div>
+          <div class="b-desc">${esc(b.desc)}${k ? ` · « ${esc(k.label)} »` : ''}</div>
+          ${prog}
+          ${pips(level)}
+        </div>
+      </li>`;
+    }).join('');
+
+    return `
+      <header class="top"><h1>🏅 Badges</h1></header>
+      ${weekModes()}
+      ${childTabs()}
+      <section class="card b-sum"><strong>${got} / ${list.length}</strong> badges débloqués · <strong>${lvls}</strong> niveau${plural(lvls)}</section>
+      <ul class="badges">${cards || '<li class="note">Aucun badge actif. Activez-les dans Réglages › Badges.</li>'}</ul>
+      <p class="note">Un niveau gagné ne se perd jamais. Pour les séries, c’est le meilleur record qui compte. Les jours non comptés ne cassent pas une série.</p>`;
+  }
+
+  const setModes = () => `<div class="seg2" role="tablist">
+    <button class="${ui.setMode === 'badges' ? '' : 'on'}" data-action="set-mode" data-mode="general">Général</button>
+    <button class="${ui.setMode === 'badges' ? 'on' : ''}" data-action="set-mode" data-mode="badges">🏅 Badges</button></div>`;
+
+  function badgeSettingsView() {
+    const c = curChild();
+    const cards = BADGES.map(b => {
+      const cf = badgeCfg(c, b);
+      const auto = b.task ? badgeTask(c, { ...b, id: '' }) : null;
+      const sel = b.task ? `
+        <label class="field">Tâche liée
+          <select class="in" data-bind="badge|${c.id}|${b.id}|task">
+            <option value="" ${cf.task ? '' : 'selected'}>Automatique${auto && !cf.task ? ` (« ${esc(auto.label)} »)` : ''}</option>
+            ${c.tasks.map(k => `<option value="${k.id}" ${cf.task === k.id ? 'selected' : ''}>${esc(k.label)}</option>`).join('')}
+          </select></label>` : '';
+      const grid = LEVELS.map((n, i) => `
+        <label class="field lvf"><span><i class="dotc lv${i + 1}"></i>${n}</span>
+          <input class="in" type="number" min="1" max="99999" inputmode="numeric" value="${cf.lv[i]}" data-bind="badge|${c.id}|${b.id}|l${i}" aria-label="Seuil ${n} : ${esc(b.name)}"></label>`).join('');
+      return `
+      <section class="card bset">
+        <div class="bset-head">
+          <span class="bset-e">${b.e}</span>
+          <div class="grow"><strong>${esc(b.name)}</strong><div class="hint" style="margin:0">${esc(b.desc)}</div></div>
+          <label class="chk"><input type="checkbox" ${cf.on ? 'checked' : ''} data-bind="badge|${c.id}|${b.id}|on"> Actif</label>
+        </div>
+        <details>
+          <summary>Régler les niveaux${b.task ? ' et la tâche' : ''}</summary>
+          ${sel}
+          <p class="hint">Seuil à atteindre (en ${esc(b.unit)}) pour chaque niveau.</p>
+          <div class="lv-grid">${grid}</div>
+          <button class="btn ghost" data-action="badge-reset" data-child="${c.id}" data-badge="${b.id}">Valeurs par défaut</button>
+        </details>
+      </section>`;
+    }).join('');
+
+    return `
+      <header class="top"><h1>⚙️ Réglages</h1></header>
+      ${setModes()}
+      ${childTabs()}
+      <p class="hint">Réglages des badges de ${esc(c.name)} : activez ou masquez chaque badge, choisissez la tâche liée et ajustez les seuils des 7 niveaux.</p>
+      ${cards}`;
+  }
 
   /* ------------------------------------------------------------------ *
    *  Vues
@@ -661,6 +888,7 @@
 
   function weekView() {
     if (ui.weekMode === 'evol') return evoView();
+    if (ui.weekMode === 'badges') return badgesView();
     const mon = monday(parse(ui.weekRef));
     const sun = addDays(mon, 6);
     const cs = state.settings.countedDays;
@@ -686,6 +914,7 @@
   }
 
   function settingsView() {
+    if (ui.setMode === 'badges') return badgeSettingsView();
     const kids = state.settings.children.map(c => {
       const tasks = c.tasks.map(k => `
         <div class="s-task">
@@ -734,6 +963,7 @@
 
     return `
       <header class="top"><h1>⚙️ Réglages</h1></header>
+      ${setModes()}
       ${kids}
       <p><button class="btn ghost" data-action="add-child">+ Ajouter un enfant</button></p>
       <section class="card">
@@ -1215,7 +1445,13 @@
       case 'day-today': ui.date = today(); break;
       case 'week-shift': ui.weekRef = fmt(addDays(parse(ui.weekRef), 7 * Number(el.dataset.n))); break;
       case 'week-today': ui.weekRef = today(); break;
-      case 'week-mode': ui.weekMode = el.dataset.mode === 'evol' ? 'evol' : 'bilan'; break;
+      case 'week-mode': ui.weekMode = ['evol', 'badges'].includes(el.dataset.mode) ? el.dataset.mode : 'bilan'; break;
+      case 'set-mode': ui.setMode = el.dataset.mode === 'badges' ? 'badges' : 'general'; break;
+      case 'badge-reset': {
+        const c = getChild(el.dataset.child);
+        if (c && c.badges) delete c.badges[el.dataset.badge];
+        break;
+      }
       case 'evo-weeks': ui.evoWeeks = Number(el.dataset.n) || 0; break;
       case 'goto-day':
         ui.childId = el.dataset.child; ui.date = el.dataset.date; ui.tab = 'day'; ui.unlocked = false; break;
@@ -1437,6 +1673,19 @@
       if (p[3] === 'target') g.target = Math.max(1, num(9999));
       else if (p[3] === 'emoji') g.emoji = el.value.trim() || '🎁';
       else g.name = el.value.trim() || g.name;
+    } else if (p[0] === 'badge') {
+      const c = getChild(p[1]); const b = BADGES.find(x => x.id === p[2]); if (!c || !b) return;
+      if (!c.badges || typeof c.badges !== 'object') c.badges = {};
+      const o = c.badges[b.id] || (c.badges[b.id] = {});
+      if (p[3] === 'on') o.on = el.checked;
+      else if (p[3] === 'task') o.task = el.value;
+      else if (/^l[0-6]$/.test(p[3])) {
+        const lv = (Array.isArray(o.lv) && o.lv.length === 7 ? o.lv : b.lv).slice();
+        lv[Number(p[3].slice(1))] = Math.max(1, Math.min(99999, parseInt(el.value, 10) || 1));
+        for (let i = 1; i < 7; i++) if (lv[i] <= lv[i - 1]) lv[i] = lv[i - 1] + 1;
+        o.lv = lv;
+        document.querySelectorAll(`[data-bind^="badge|${c.id}|${b.id}|l"]`).forEach(inp => { inp.value = lv[Number(inp.dataset.bind.split('|')[3].slice(1))]; });
+      }
     } else if (p[0] === 'day') {
       const i = Number(p[1]);
       const set = new Set(state.settings.countedDays);
@@ -1468,6 +1717,7 @@
     }
   }
   joinFromLink();
+  setTimeout(checkBadges, 0);
   window.addEventListener('hashchange', joinFromLink); // lien ouvert alors que l'application tourne déjà
 
   document.addEventListener('visibilitychange', () => { if (!document.hidden) runSync(); });
