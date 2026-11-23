@@ -93,6 +93,10 @@
     s.settings.children.forEach(c => {
       if (!Array.isArray(c.goals)) c.goals = defaultGoals();
       if (!Array.isArray(c.spent)) c.spent = [];
+      c.tasks.forEach(k => {
+        k.slots = k.slots === true;
+        k.timer = Number.isFinite(k.timer) && k.timer > 0 ? Math.round(k.timer) : 0;
+      });
     });
     if (!s.epoch || typeof s.epoch.id !== 'string') s.epoch = { id: '0', ts: 0 };
     if (!s.ts || typeof s.ts !== 'object') s.ts = {};
@@ -147,16 +151,22 @@
     L[ds][cid][tid] = v;
   }
 
+  // Une tâche « matin et soir » a deux cases : k.id (matin) et k.id + '@s' (soir).
+  const taskKeys = k => (k.slots ? [k.id, k.id + '@s'] : [k.id]);
+  const taskOfKey = (c, key) => c.tasks.find(k => k.id === key.replace(/@s$/, ''));
+
   function dayPoints(c, ds) {
     let t = 0;
     for (const k of c.tasks) {
-      const v = getV(ds, c.id, k.id);
-      if (v === 1) t += k.ok; else if (v === -1) t -= k.ko;
+      for (const key of taskKeys(k)) {
+        const v = getV(ds, c.id, key);
+        if (v === 1) t += k.ok; else if (v === -1) t -= k.ko;
+      }
     }
     return t;
   }
-  const dayMax = c => c.tasks.reduce((s, k) => s + k.ok, 0);
-  const dayRated = (c, ds) => c.tasks.some(k => getV(ds, c.id, k.id) !== 0);
+  const dayMax = c => c.tasks.reduce((s, k) => s + k.ok * taskKeys(k).length, 0);
+  const dayRated = (c, ds) => c.tasks.some(k => taskKeys(k).some(key => getV(ds, c.id, key) !== 0));
   const goalReached = (c, ds) => dayRated(c, ds) && dayPoints(c, ds) >= c.dailyGoal;
 
   function weekTotal(c, mon) {
@@ -197,6 +207,97 @@
   const fmtFR = ds => { const [y, m, d] = ds.split('-'); return `${d}/${m}/${y}`; };
 
   /* ------------------------------------------------------------------ *
+   *  Minuteurs : les points sont accordés à la fin du compte à rebours.
+   *  Les minuteurs en cours restent sur cet appareil (non synchronisés).
+   * ------------------------------------------------------------------ */
+  const TIMER_KEY = 'bonspoints.timers';
+  const TIMER_GRACE = 30 * 60 * 1000; // au-delà, un minuteur terminé « dans le vide » n'accorde rien
+  let timers = {};
+  try { timers = JSON.parse(localStorage.getItem(TIMER_KEY) || '{}') || {}; } catch (e) { timers = {}; }
+  const saveTimers = () => { try { localStorage.setItem(TIMER_KEY, JSON.stringify(timers)); } catch (e) { /* ignoré */ } };
+  const tkey = (ds, cid, key) => `${ds}|${cid}|${key}`;
+  const clock = sec => `${Math.floor(sec / 60)}:${pad(sec % 60)}`;
+  const dur = sec => (sec % 60 === 0 ? `${sec / 60} min` : clock(sec));
+
+  let actx = null;
+  function primeAudio() {
+    try {
+      const AC = window.AudioContext || window.webkitAudioContext;
+      if (!AC) return;
+      actx = actx || new AC();
+      if (actx.state === 'suspended') actx.resume();
+    } catch (e) { /* ignoré */ }
+  }
+  function beep() {
+    try {
+      primeAudio();
+      if (actx) [0, 0.25, 0.5].forEach((d, i) => {
+        const o = actx.createOscillator(), g = actx.createGain(), t = actx.currentTime + d;
+        o.frequency.value = i === 2 ? 1175 : 880;
+        o.connect(g); g.connect(actx.destination);
+        g.gain.setValueAtTime(0.0001, t);
+        g.gain.exponentialRampToValueAtTime(0.3, t + 0.02);
+        g.gain.exponentialRampToValueAtTime(0.0001, t + 0.22);
+        o.start(t); o.stop(t + 0.25);
+      });
+    } catch (e) { /* ignoré */ }
+    try { if (navigator.vibrate) navigator.vibrate([200, 100, 200]); } catch (e) { /* ignoré */ }
+  }
+  let wake = null;
+  async function keepAwake() {
+    try {
+      if ('wakeLock' in navigator && !wake) {
+        wake = await navigator.wakeLock.request('screen');
+        wake.addEventListener('release', () => { wake = null; });
+      }
+    } catch (e) { /* ignoré */ }
+  }
+  function releaseWake() { try { if (wake) wake.release(); } catch (e) { /* ignoré */ } wake = null; }
+
+  function tick() {
+    const now = Date.now();
+    const keys = Object.keys(timers);
+    if (!keys.length) { releaseWake(); return; }
+    const done = [];
+    let late = 0;
+    for (const tk of keys) {
+      const t = timers[tk];
+      if (now < t.end) continue;
+      delete timers[tk];
+      const [ds, cid, key] = tk.split('|');
+      const c = getChild(cid), k = c && taskOfKey(c, key);
+      if (!k) continue;
+      if (now - t.end > TIMER_GRACE) { late++; continue; }
+      const was = goalReached(c, ds);
+      if (getV(ds, cid, key) !== 1) setV(ds, cid, key, 1);
+      done.push({ c, k, key, newGoal: !was && goalReached(c, ds) });
+    }
+    if (done.length || late) {
+      saveTimers();
+      if (done.length) save();
+      if (ui.tab !== 'settings') render();
+      if (done.length) {
+        beep();
+        const d = done[0];
+        const slot = d.k.slots ? (d.key.endsWith('@s') ? ' (soir)' : ' (matin)') : '';
+        toast(`⏱️ Terminé ! +${d.k.ok} pt${plural(d.k.ok)} pour ${d.c.name} : ${d.k.label}${slot}`);
+        const g = done.find(x => x.newGoal);
+        if (g) setTimeout(() => celebrate(g.c), 900);
+      } else {
+        toast('Minuteur expiré sans validation : à relancer');
+      }
+      return;
+    }
+    document.querySelectorAll('[data-timer-text]').forEach(el => {
+      const t = timers[el.dataset.timerText];
+      if (!t) return;
+      el.textContent = clock(Math.max(0, Math.ceil((t.end - now) / 1000)));
+      const bar = el.parentElement.querySelector('i');
+      if (bar) bar.style.width = `${Math.min(100, ((now - (t.end - t.dur * 1000)) / (t.dur * 1000)) * 100)}%`;
+    });
+  }
+
+  /* ------------------------------------------------------------------ *
    *  Statistiques et graphiques (SVG, sans dépendance)
    *  Les statistiques portent sur les jours comptés, comme le total de la semaine :
    *  bons points − mauvais points = total.
@@ -214,9 +315,11 @@
       rated++;
       if (goalReached(c, ds)) goals++;
       c.tasks.forEach((k, i) => {
-        const v = getV(ds, c.id, k.id);
-        if (v === 1) { per[i].done++; per[i].gained += k.ok; gained += k.ok; }
-        else if (v === -1) { per[i].missed++; per[i].lost += k.ko; lost += k.ko; }
+        for (const key of taskKeys(k)) {
+          const v = getV(ds, c.id, key);
+          if (v === 1) { per[i].done++; per[i].gained += k.ok; gained += k.ok; }
+          else if (v === -1) { per[i].missed++; per[i].lost += k.ko; lost += k.ko; }
+        }
       });
     }
     return { gained, lost, net: gained - lost, rated, goals, per };
@@ -437,22 +540,35 @@
     else if (rated) msg = `Encore ${c.dailyGoal - pts} point${plural(c.dailyGoal - pts)} pour atteindre l’objectif`;
     else msg = 'Notez la journée avec ✔ (fait) ou ✖ (pas fait)';
 
+    const seg = (k, key) => {
+      const v = getV(ds, c.id, key);
+      const tk = tkey(ds, c.id, key);
+      const run = timers[tk];
+      let ok;
+      if (k.timer > 0 && v !== 1) {
+        ok = run
+          ? `<button class="seg-btn ok timer run" data-action="timer-stop" data-task="${key}" aria-label="Arrêter le minuteur : ${esc(k.label)}">
+              <span data-timer-text="${tk}">${clock(Math.max(0, Math.ceil((run.end - Date.now()) / 1000)))}</span><i style="width:${Math.min(100, ((Date.now() - (run.end - run.dur * 1000)) / (run.dur * 1000)) * 100)}%"></i></button>`
+          : `<button class="seg-btn ok timer" data-action="timer-start" data-task="${key}" aria-label="Lancer le minuteur de ${dur(k.timer)} : ${esc(k.label)}">▶ ${clock(k.timer)}</button>`;
+      } else {
+        ok = `<button class="seg-btn ok ${v === 1 ? 'on' : ''}" data-action="rate" data-task="${key}" data-v="1"
+            aria-pressed="${v === 1}" aria-label="Fait : ${esc(k.label)}">✔</button>`;
+      }
+      return `<div class="seg">${ok}
+          <button class="seg-btn ko ${v === -1 ? 'on' : ''}" data-action="rate" data-task="${key}" data-v="-1"
+            aria-pressed="${v === -1}" aria-label="Pas fait : ${esc(k.label)}">✖</button></div>`;
+    };
     const rows = c.tasks.map(k => {
-      const v = getV(ds, c.id, k.id);
-      return `
-      <li class="task">
-        <div>
-          <div class="task-name">${esc(k.label)}</div>
-          <div class="task-pts">+${k.ok} si fait${k.ko ? ` · −${k.ko} sinon` : ''}</div>
-        </div>
-        <div class="seg">
-          <button class="seg-btn ok ${v === 1 ? 'on' : ''}" data-action="rate" data-task="${k.id}" data-v="1"
-            aria-pressed="${v === 1}" aria-label="Fait : ${esc(k.label)}">✔</button>
-          <button class="seg-btn ko ${v === -1 ? 'on' : ''}" data-action="rate" data-task="${k.id}" data-v="-1"
-            aria-pressed="${v === -1}" aria-label="Pas fait : ${esc(k.label)}">✖</button>
-        </div>
-      </li>`;
+      const head = `<div>
+          <div class="task-name">${esc(k.label)}${k.timer > 0 ? ` <span class="badge">⏱ ${dur(k.timer)}</span>` : ''}</div>
+          <div class="task-pts">+${k.ok} si fait${k.ko ? ` · −${k.ko} sinon` : ''}${k.slots ? ' (par coche)' : ''}</div>
+        </div>`;
+      if (!k.slots) return `<li class="task">${head}${seg(k, k.id)}</li>`;
+      return `<li class="task slots">${head}<div class="slot-list">
+          <div class="slot"><span class="slot-l">☀️ Matin</span>${seg(k, k.id)}</div>
+          <div class="slot"><span class="slot-l">🌙 Soir</span>${seg(k, k.id + '@s')}</div></div></li>`;
     }).join('');
+    const hasTimer = c.tasks.some(k => k.timer > 0);
 
     return `
       <header class="top"><h1>⭐ Bons points</h1></header>
@@ -475,6 +591,7 @@
         <button class="btn" data-action="all-done">Tout fait ✔</button>
         <button class="btn ghost" data-action="clear-day">Effacer la journée</button>
       </div>
+      ${hasTimer ? '<p class="note">⏱ Lancez le minuteur : les points sont accordés à la fin. Parents : maintenez ▶ appuyé pour valider sans minuteur.</p>' : ''}
       ${counted ? '' : '<p class="note">Ce jour n’est pas compté pour la récompense du week-end.</p>'}`;
   }
 
@@ -576,6 +693,10 @@
           <label class="num"><span>+</span><input type="number" min="0" max="99" inputmode="numeric" value="${k.ok}" data-bind="task|${c.id}|${k.id}|ok" aria-label="Points si fait"></label>
           <label class="num"><span>−</span><input type="number" min="0" max="99" inputmode="numeric" value="${k.ko}" data-bind="task|${c.id}|${k.id}|ko" aria-label="Points retirés si pas fait"></label>
           <button class="icon-btn danger" data-action="del-task" data-child="${c.id}" data-task="${k.id}" aria-label="Supprimer la tâche">🗑</button>
+          <div class="s-opts">
+            <label class="chk"><input type="checkbox" ${k.slots ? 'checked' : ''} data-bind="task|${c.id}|${k.id}|slots"> ☀️🌙 Matin et soir</label>
+            <label class="num tm"><span>⏱ Minuteur</span><input type="number" min="0" max="60" step="0.5" inputmode="decimal" value="${k.timer ? k.timer / 60 : ''}" placeholder="0" data-bind="task|${c.id}|${k.id}|timer" aria-label="Minuteur en minutes (0 = aucun)"><span>min</span></label>
+          </div>
         </div>`).join('');
 
       const tiers = c.tiers.map((t, i) => `
@@ -1047,6 +1168,26 @@
     return null;
   }
 
+  // Appui long sur ▶ (0,7 s) : le parent valide la tâche sans attendre le minuteur.
+  let lp = null;
+  document.addEventListener('pointerdown', e => {
+    const b = e.target.closest && e.target.closest('[data-action="timer-start"]');
+    if (lp) clearTimeout(lp.timer);
+    lp = null;
+    if (!b) return;
+    const key = b.dataset.task;
+    lp = { fired: false, timer: setTimeout(() => {
+      lp.fired = true;
+      const c = curChild(), was = goalReached(c, ui.date);
+      setV(ui.date, c.id, key, 1);
+      save(); render();
+      toast('✔ Validé sans minuteur');
+      if (!was && goalReached(c, ui.date)) celebrate(c);
+    }, 700) };
+  });
+  ['pointerup', 'pointercancel', 'pointerleave'].forEach(t => document.addEventListener(t, () => { if (lp) clearTimeout(lp.timer); }, true));
+  document.addEventListener('contextmenu', e => { if (e.target.closest && e.target.closest('.timer')) e.preventDefault(); });
+
   document.addEventListener('click', e => {
     const el = e.target.closest('[data-action]');
     if (!el) return;
@@ -1084,27 +1225,45 @@
         const val = Number(el.dataset.v);
         const cur = getV(ui.date, c.id, el.dataset.task);
         const was = goalReached(c, ui.date);
+        if (timers[tkey(ui.date, c.id, el.dataset.task)]) { delete timers[tkey(ui.date, c.id, el.dataset.task)]; saveTimers(); }
         setV(ui.date, c.id, el.dataset.task, cur === val ? 0 : val);
         if (!was && goalReached(c, ui.date)) celebrateFor = c;
+        break;
+      }
+      case 'timer-start': {
+        if (lp && lp.fired) { lp = null; return; }
+        const c = curChild();
+        const k = taskOfKey(c, el.dataset.task);
+        if (!k || !(k.timer > 0)) return;
+        timers[tkey(ui.date, c.id, el.dataset.task)] = { end: Date.now() + k.timer * 1000, dur: k.timer };
+        saveTimers(); primeAudio(); keepAwake();
+        break;
+      }
+      case 'timer-stop': {
+        const c = curChild();
+        delete timers[tkey(ui.date, c.id, el.dataset.task)];
+        saveTimers();
         break;
       }
       case 'all-done': {
         const c = curChild();
         const was = goalReached(c, ui.date);
-        c.tasks.forEach(k => setV(ui.date, c.id, k.id, 1));
+        c.tasks.forEach(k => taskKeys(k).forEach(key => { delete timers[tkey(ui.date, c.id, key)]; setV(ui.date, c.id, key, 1); }));
+        saveTimers();
         if (!was && goalReached(c, ui.date)) celebrateFor = c;
         break;
       }
       case 'clear-day': {
         const c = curChild();
         if (!dayRated(c, ui.date) || !confirm(`Effacer la notation de ${c.name} pour ce jour ?`)) return;
-        c.tasks.forEach(k => setV(ui.date, c.id, k.id, 0));
+        c.tasks.forEach(k => taskKeys(k).forEach(key => { delete timers[tkey(ui.date, c.id, key)]; setV(ui.date, c.id, key, 0); }));
+        saveTimers();
         break;
       }
 
       case 'add-task': {
         const c = getChild(el.dataset.child);
-        c.tasks.push({ id: 't' + uid(), label: 'Nouvelle tâche', ok: 1, ko: 0 });
+        c.tasks.push({ id: 't' + uid(), label: 'Nouvelle tâche', ok: 1, ko: 0, slots: false, timer: 0 });
         break;
       }
       case 'del-task': {
@@ -1262,6 +1421,11 @@
     } else if (p[0] === 'task') {
       const c = getChild(p[1]); const k = c && c.tasks.find(t => t.id === p[2]); if (!k) return;
       if (p[3] === 'label') k.label = el.value.trim() || k.label;
+      else if (p[3] === 'slots') k.slots = el.checked;
+      else if (p[3] === 'timer') {
+        const min = parseFloat(String(el.value).replace(',', '.')) || 0;
+        k.timer = Math.round(Math.max(0, Math.min(60, min)) * 60);
+      }
       else k[p[3]] = num(99);
     } else if (p[0] === 'tier') {
       const c = getChild(p[1]); const t = c && c.tiers[Number(p[2])]; if (!t) return;
@@ -1281,6 +1445,14 @@
     }
     save();
   });
+
+  setInterval(tick, 500);
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState !== 'visible') return;
+    tick();
+    if (Object.keys(timers).length) keepAwake();
+  });
+  tick();
 
   document.addEventListener('focusin', e => { if (e.target && e.target.hasAttribute && e.target.hasAttribute('data-select')) e.target.select(); });
 

@@ -250,3 +250,19 @@ button { cursor: pointer; }
 .rbar .ko { background: var(--ko); }
 .rate small { color: var(--muted); font-size: .75rem; }
 @media (max-width: 380px) { .pies { grid-template-columns: 1fr; } }
+
+/* Matin / soir et minuteur */
+.badge { display: inline-block; font-size: .7rem; font-weight: 600; padding: 1px 8px; border-radius: 999px; background: var(--primary-soft); color: var(--primary); vertical-align: middle; }
+.task.slots { flex-direction: column; align-items: stretch; }
+.slot-list { display: flex; flex-direction: column; gap: 8px; }
+.slot { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.slot-l { font-weight: 600; font-size: .92rem; }
+.seg-btn.timer { position: relative; overflow: hidden; width: auto; min-width: 84px; padding: 0 10px; font-size: .95rem; color: var(--ok); border-color: var(--ok); user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; touch-action: manipulation; }
+.seg-btn.timer.run { background: var(--ok-soft); font-variant-numeric: tabular-nums; }
+.seg-btn.timer i { position: absolute; left: 0; bottom: 0; height: 4px; background: var(--ok); width: 0; }
+.s-task { flex-wrap: wrap; }
+.s-opts { flex-basis: 100%; display: flex; flex-wrap: wrap; align-items: center; gap: 14px; margin: 0 0 6px; font-size: .85rem; color: var(--muted); }
+.chk { display: flex; align-items: center; gap: 6px; }
+.chk input { width: 18px; height: 18px; }
+.num.tm { font-weight: 500; gap: 6px; }
+.num.tm input { width: 64px; }
