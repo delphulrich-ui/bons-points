@@ -703,6 +703,7 @@
 
   function imgRow(c, b) {
     const url = imgUrl(c.id, b.id);
+    const gif = gifOf(c.id, b.id);
     const data = `data-child="${c.id}" data-badge="${b.id}"`;
     return `
       <div class="img-row">
@@ -714,7 +715,15 @@
           <button class="btn danger" data-action="img-del" ${data}>Supprimer l’image</button>` : ''}
         </div>
       </div>
-      <p class="hint">L’image reste sur cet appareil : elle n’est ni envoyée, ni synchronisée avec l’autre téléphone.</p>`;
+      <p class="hint">L’image reste sur cet appareil : elle n’est ni envoyée, ni synchronisée avec l’autre téléphone.</p>
+      <div class="img-row">
+        <div class="img-prev">${gif ? (gif.video ? `<video src="${gif.url}" muted loop playsinline autoplay></video>` : `<img src="${gif.url}" alt="">`) : '🎬'}</div>
+        <div class="img-btns">
+          <label class="btn ghost">🎬 ${gif ? 'Changer le GIF' : 'Choisir un GIF'}<input type="file" accept="image/gif,image/webp,image/apng,video/mp4,video/webm,video/quicktime" hidden data-gif="${c.id}|${b.id}"></label>
+          ${gif ? `<button class="btn danger" data-action="gif-del" ${data}>Supprimer le GIF</button>` : ''}
+        </div>
+      </div>
+      <p class="hint">Le GIF (ou une courte vidéo, 12 Mo maximum) s’affiche tant qu’on garde le doigt appuyé sur la carte. Il reste sur cet appareil.</p>`;
   }
 
   function badgeSettingsView() {
@@ -763,7 +772,7 @@
    *  inclinant le téléphone. Dessin original, sans rapport avec une marque existante.
    * ------------------------------------------------------------------ */
   const BADGE_HUE = { serie: 18, dents: 195, parfaite: 48, sansfaute: 280, champion: 38, roi: 52, retour: 350, devoirs: 220, entente: 150, chambre: 26, matinsoir: 330, chrono: 170, tirelire: 45, chasseur: 300 };
-  const tc = { drag: false, moved: false, t0: 0, x0: 0, y0: 0, wrap: null, gyro: false, hover: null };
+  const tc = { lp: 0, gifOn: false, drag: false, moved: false, t0: 0, x0: 0, y0: 0, wrap: null, gyro: false, hover: null };
   const clamp01 = n => Math.max(0, Math.min(1, n));
 
   function cardFront(x, c, mini) {
@@ -824,7 +833,7 @@
         <div class="cv-bg" data-action="card-close"></div>
         <button class="cv-x" data-action="card-close" aria-label="Fermer">✕</button>
         <div class="cv-stage">
-          <div class="tc-wrap tc-box">
+          <div class="tc-wrap tc-box" data-child="${c.id}" data-badge="${x.b.id}">
             <div class="tc-tilt"><div class="tc-flip ${ui.cardFlip ? 'back' : ''}">${cardFront(x, c, false)}${cardBack(x)}</div></div>
             <div class="tc-shadow"></div>
           </div>
@@ -863,6 +872,31 @@
     el.classList.remove('drag');
     tiltTo(el, 0.5, 0.5, false);
   }
+  function showGif(w) {
+    if (ui.cardFlip || !w) return;
+    const g = gifOf(w.dataset.child, w.dataset.badge);
+    const art = w.querySelector('.tc-flip .tcard:not(.back) .tc-art');
+    if (!g || !art || art.querySelector('.tc-gif')) return;
+    let el;
+    if (g.video) {
+      el = document.createElement('video');
+      el.muted = true; el.loop = true; el.autoplay = true; el.playsInline = true;
+      el.setAttribute('muted', ''); el.setAttribute('playsinline', '');
+      el.src = g.url;
+      if (el.play) { const pr = el.play(); if (pr && pr.catch) pr.catch(() => {}); }
+    } else {
+      el = document.createElement('img');
+      el.alt = ''; el.draggable = false; el.src = g.url;
+    }
+    el.className = 'tc-gif';
+    art.appendChild(el);
+    tc.gifOn = true;
+    if (navigator.vibrate) { try { navigator.vibrate(25); } catch (e) { /* ignoré */ } }
+  }
+  function hideGif() {
+    document.querySelectorAll('.tc-gif').forEach(e => e.remove());
+    tc.gifOn = false;
+  }
   function flipCard() {
     ui.cardFlip = !ui.cardFlip;
     const f = document.querySelector('.cv .tc-flip');
@@ -890,6 +924,8 @@
     try { w.setPointerCapture(e.pointerId); } catch (err) { /* ignoré */ }
     w.querySelector('.tc-tilt').classList.add('drag');
     tiltFromEvent(w, e);
+    clearTimeout(tc.lp);
+    tc.lp = setTimeout(() => { if (tc.drag && !tc.moved) showGif(tc.wrap); }, 450);
   });
   document.addEventListener('pointermove', e => {
     if (tc.drag) {
@@ -904,6 +940,8 @@
   });
   const endDrag = e => {
     if (!tc.drag) return;
+    clearTimeout(tc.lp);
+    hideGif();
     tc.drag = false;
     const w = tc.wrap;
     if (e.type === 'pointerup' && !tc.moved && Date.now() - tc.t0 < 400) flipCard();
@@ -919,13 +957,14 @@
     el.classList.add('drag');
     tiltTo(el, clamp01(0.5 + e.gamma / 70), clamp01(0.5 + ((e.beta || 45) - 45) / 70), true);
   });
+  document.addEventListener('contextmenu', e => { if (e.target.closest && e.target.closest('.cv .tc-wrap')) e.preventDefault(); });
   document.addEventListener('keydown', e => { if (e.key === 'Escape' && ui.card) { ui.card = null; render(); } });
 
   /* ------------------------------------------------------------------ *
    *  Images personnalisées des badges : choisies depuis la galerie du téléphone et enregistrées
    *  sur CET appareil uniquement (IndexedDB). Elles ne sont ni publiées ni synchronisées.
    * ------------------------------------------------------------------ */
-  const IMG = { db: null, urls: {}, recs: {} };
+  const IMG = { db: null, urls: {}, recs: {}, gifs: {} };
   const imgKey = (cid, bid) => `${cid}|${bid}`;
   const imgUrl = (cid, bid) => IMG.urls[imgKey(cid, bid)] || '';
 
@@ -955,10 +994,42 @@
     try {
       const rq = {};
       await imgTx('readonly', st => { rq.k = st.getAllKeys(); rq.v = st.getAll(); });
-      rq.k.result.forEach((k, i) => { const r = rq.v.result[i]; if (r && r.cur) setRec(k, r); });
+      rq.k.result.forEach((k, i) => {
+        const r = rq.v.result[i];
+        if (String(k).indexOf('gif|') === 0) { if (r && r.blob) setGif(k, r); }
+        else if (r && r.cur) setRec(k, r);
+      });
       return rq.k.result.length > 0;
     } catch (e) { return false; }
   }
+  const gifKey = (cid, bid) => `gif|${cid}|${bid}`;
+  const gifOf = (cid, bid) => IMG.gifs[gifKey(cid, bid)] || null;
+  function setGif(key, rec) {
+    if (IMG.gifs[key]) URL.revokeObjectURL(IMG.gifs[key].url);
+    if (rec) IMG.gifs[key] = { url: URL.createObjectURL(rec.blob), video: !!rec.video };
+    else delete IMG.gifs[key];
+  }
+  const GIF_MAX = 12 * 1024 * 1024;
+  async function gifPick(cid, bid, file) {
+    try {
+      if (file.size > GIF_MAX) { toast('Fichier trop lourd (12 Mo maximum)'); return; }
+      const video = /^video\//.test(file.type) || /\.(mp4|webm|mov)$/i.test(file.name || '');
+      if (!video) { const bmp = await createImageBitmap(file); if (bmp.close) bmp.close(); }
+      const rec = { blob: file, video };
+      await imgTx('readwrite', st => st.put(rec, gifKey(cid, bid)));
+      setGif(gifKey(cid, bid), rec);
+      toast('GIF enregistré sur cet appareil ✔');
+    } catch (e) { toast('Fichier illisible ou stockage impossible'); }
+    ui.openBadge = bid;
+    render();
+  }
+  async function gifDel(cid, bid) {
+    try { await imgTx('readwrite', st => st.delete(gifKey(cid, bid))); setGif(gifKey(cid, bid), null); }
+    catch (e) { toast('Suppression impossible'); }
+    ui.openBadge = bid;
+    render();
+  }
+
   async function putImg(key, rec) { await imgTx('readwrite', st => st.put(rec, key)); setRec(key, rec); }
   async function delImg(key) { await imgTx('readwrite', st => st.delete(key)); setRec(key, null); }
 
@@ -1795,6 +1866,9 @@
       }
       case 'set-mode': ui.setMode = el.dataset.mode === 'badges' ? 'badges' : 'general'; break;
       case 'img-nobg': imgNoBg(el.dataset.child, el.dataset.badge); return;
+      case 'gif-del':
+        if (confirm('Supprimer le GIF de ce badge ?')) gifDel(el.dataset.child, el.dataset.badge);
+        return;
       case 'img-orig': imgOrig(el.dataset.child, el.dataset.badge); return;
       case 'img-del':
         if (confirm('Supprimer l’image de ce badge ? L’emoji reviendra.')) imgDel(el.dataset.child, el.dataset.badge);
@@ -1996,6 +2070,13 @@
       return;
     }
 
+    if (el.dataset && el.dataset.gif) {
+      const [gcid, gbid] = el.dataset.gif.split('|');
+      const f = el.files && el.files[0];
+      el.value = '';
+      if (f) gifPick(gcid, gbid, f);
+      return;
+    }
     if (el.dataset && el.dataset.img) {
       const [icid, ibid] = el.dataset.img.split('|');
       const f = el.files && el.files[0];
