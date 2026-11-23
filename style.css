@@ -413,3 +413,17 @@ button { cursor: pointer; }
 .cv-bar .icon-btn, .cv-bar .btn.ghost { background: rgba(255, 255, 255, .12); border-color: rgba(255, 255, 255, .3); color: #fff; }
 .cv-bar .btn.on { background: var(--primary); border-color: var(--primary); }
 .nav button { font-size: .72rem; }
+
+/* Images personnalisées */
+.tc-img {
+  position: absolute; inset: 5%; width: 90%; height: 90%; object-fit: contain; pointer-events: none;
+  filter: drop-shadow(0 .12em .1em rgba(0, 0, 0, .45));
+  transform: translate(calc(var(--px, 0) * -.25em), calc(var(--py, 0) * -.25em)); transition: transform .15s;
+}
+.medal img { width: 100%; height: 100%; object-fit: contain; padding: 4px; border-radius: 50%; }
+.img-row { display: flex; gap: 12px; align-items: center; margin: 10px 0 4px; }
+.img-prev { width: 76px; height: 76px; flex-shrink: 0; border-radius: 12px; border: 1px solid var(--line); display: grid; place-items: center; font-size: 2.2rem; overflow: hidden;
+  background: conic-gradient(#d9d9e3 25%, #fff 0 50%, #d9d9e3 0 75%, #fff 0) 0 0 / 14px 14px; }
+.img-prev img { width: 100%; height: 100%; object-fit: contain; }
+.img-btns { display: flex; flex-wrap: wrap; gap: 8px; }
+.img-btns .btn { font-size: .82rem; padding: 8px 12px; cursor: pointer; }

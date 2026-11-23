@@ -126,7 +126,7 @@
     setTimeout(checkBadges, 0);
   }
 
-  const ui = { tab: 'day', childId: state.settings.children[0].id, date: today(), weekRef: today(), weekMode: 'bilan', setMode: 'general', card: null, cardFlip: false, evoWeeks: 8, unlocked: false, pin: null };
+  const ui = { tab: 'day', childId: state.settings.children[0].id, date: today(), weekRef: today(), weekMode: 'bilan', setMode: 'general', card: null, cardFlip: false, openBadge: null, evoWeeks: 8, unlocked: false, pin: null };
 
   const getChild = id => state.settings.children.find(c => c.id === id);
   const curChild = () => getChild(ui.childId) || state.settings.children[0];
@@ -658,7 +658,7 @@
     toast(`${u.b.e} ${u.c.name} : ${u.b.name} niveau ${LEVELS[u.lvl - 1]} !${ups.length > 1 ? ` (+${ups.length - 1} autre${plural(ups.length - 1)})` : ''}`);
   }
 
-  const medal = (b, level) => `<div class="medal lv${level}" aria-hidden="true"><span>${b.e}</span></div>`;
+  const medal = (b, level, url) => `<div class="medal lv${level}" aria-hidden="true">${url ? `<img src="${url}" alt="">` : `<span>${b.e}</span>`}</div>`;
   const pips = level => `<div class="pips" aria-hidden="true">${LEVELS.map((n, i) => `<i class="lv${i + 1} ${level > i ? 'on' : ''}" title="${n}"></i>`).join('')}</div>`;
 
   function badgesView() {
@@ -678,7 +678,7 @@
           <small>${v}${next ? ` / ${next}` : ''} ${esc(b.unit)}${next ? ` · prochain : ${LEVELS[level]}` : ' · niveau maximum 🎉'}${cur !== null && STREAKS.includes(b.id) ? ` · série en cours : ${cur}` : ''}</small>`;
       return `
       <li class="badge ${level ? '' : 'locked'}">
-        ${medal(b, level)}
+        ${medal(b, level, imgUrl(c.id, b.id))}
         <div class="b-body">
           <div class="b-top"><strong>${esc(b.name)}</strong><span class="b-lvl lv${level}">${lab}</span></div>
           <div class="b-desc">${esc(b.desc)}${k ? ` · « ${esc(k.label)} »` : ''}</div>
@@ -701,6 +701,22 @@
     <button class="${ui.setMode === 'badges' ? '' : 'on'}" data-action="set-mode" data-mode="general">Général</button>
     <button class="${ui.setMode === 'badges' ? 'on' : ''}" data-action="set-mode" data-mode="badges">🏅 Badges</button></div>`;
 
+  function imgRow(c, b) {
+    const url = imgUrl(c.id, b.id);
+    const data = `data-child="${c.id}" data-badge="${b.id}"`;
+    return `
+      <div class="img-row">
+        <div class="img-prev">${url ? `<img src="${url}" alt="">` : `<span>${b.e}</span>`}</div>
+        <div class="img-btns">
+          <label class="btn ghost">🖼️ ${url ? 'Changer l’image' : 'Choisir une image'}<input type="file" accept="image/*" hidden data-img="${c.id}|${b.id}"></label>
+          ${url ? `<button class="btn ghost" data-action="img-nobg" ${data}>✂️ Retirer le fond uni</button>
+          <button class="btn ghost" data-action="img-orig" ${data}>↩️ Image d’origine</button>
+          <button class="btn danger" data-action="img-del" ${data}>Supprimer l’image</button>` : ''}
+        </div>
+      </div>
+      <p class="hint">L’image reste sur cet appareil : elle n’est ni envoyée, ni synchronisée avec l’autre téléphone.</p>`;
+  }
+
   function badgeSettingsView() {
     const c = curChild();
     const cards = BADGES.map(b => {
@@ -722,8 +738,9 @@
           <div class="grow"><strong>${esc(b.name)}</strong><div class="hint" style="margin:0">${esc(b.desc)}</div></div>
           <label class="chk"><input type="checkbox" ${cf.on ? 'checked' : ''} data-bind="badge|${c.id}|${b.id}|on"> Actif</label>
         </div>
-        <details>
-          <summary>Régler les niveaux${b.task ? ' et la tâche' : ''}</summary>
+        <details ${ui.openBadge === b.id ? 'open' : ''}>
+          <summary>Image, niveaux${b.task ? ' et tâche' : ''}</summary>
+          ${imgRow(c, b)}
           ${sel}
           <p class="hint">Seuil à atteindre (en ${esc(b.unit)}) pour chaque niveau.</p>
           <div class="lv-grid">${grid}</div>
@@ -758,7 +775,7 @@
       : `<div class="tc-bar"><i style="width:${pct}%"></i></div><small>${v}${next ? ` / ${next}` : ''} ${esc(b.unit)}${next ? '' : ' · max 🎉'}</small>`;
     return `<div class="tcard lv${level} ${level ? '' : 'locked'} ${mini ? 'mini' : ''}" style="--h:${BADGE_HUE[b.id] || 200}">
       <div class="tc-top"><span class="tc-name">${esc(b.name)}</span><span class="tc-lvl">${level ? '★'.repeat(level) : '🔒'}</span></div>
-      <div class="tc-art"><span class="tc-emoji">${b.e}</span><i class="tc-s s1"></i><i class="tc-s s2"></i><i class="tc-s s3"></i></div>
+      <div class="tc-art">${imgUrl(c.id, b.id) ? `<img class="tc-img" src="${imgUrl(c.id, b.id)}" alt="" draggable="false">` : `<span class="tc-emoji">${b.e}</span>`}<i class="tc-s s1"></i><i class="tc-s s2"></i><i class="tc-s s3"></i></div>
       <div class="tc-rank"><strong>${level ? LEVELS[level - 1] : 'À débloquer'}</strong><span>${esc(b.unit)}</span></div>
       <div class="tc-text">${esc(b.desc)}${k ? ` « ${esc(k.label)} »` : ''}</div>
       <div class="tc-prog">${prog}</div>
@@ -903,6 +920,156 @@
     tiltTo(el, clamp01(0.5 + e.gamma / 70), clamp01(0.5 + ((e.beta || 45) - 45) / 70), true);
   });
   document.addEventListener('keydown', e => { if (e.key === 'Escape' && ui.card) { ui.card = null; render(); } });
+
+  /* ------------------------------------------------------------------ *
+   *  Images personnalisées des badges : choisies depuis la galerie du téléphone et enregistrées
+   *  sur CET appareil uniquement (IndexedDB). Elles ne sont ni publiées ni synchronisées.
+   * ------------------------------------------------------------------ */
+  const IMG = { db: null, urls: {}, recs: {} };
+  const imgKey = (cid, bid) => `${cid}|${bid}`;
+  const imgUrl = (cid, bid) => IMG.urls[imgKey(cid, bid)] || '';
+
+  function imgDb() {
+    return new Promise((res, rej) => {
+      if (IMG.db) return res(IMG.db);
+      if (typeof indexedDB === 'undefined') return rej(new Error('indexedDB indisponible'));
+      const r = indexedDB.open('bonspoints-img', 1);
+      r.onupgradeneeded = () => r.result.createObjectStore('img');
+      r.onsuccess = () => { IMG.db = r.result; res(IMG.db); };
+      r.onerror = () => rej(r.error);
+    });
+  }
+  const imgTx = (mode, fn) => imgDb().then(db => new Promise((res, rej) => {
+    const tx = db.transaction('img', mode);
+    const out = fn(tx.objectStore('img'));
+    tx.oncomplete = () => res(out);
+    tx.onerror = () => rej(tx.error);
+    tx.onabort = () => rej(tx.error);
+  }));
+  function setRec(key, rec) {
+    if (IMG.urls[key]) URL.revokeObjectURL(IMG.urls[key]);
+    if (rec) { IMG.recs[key] = rec; IMG.urls[key] = URL.createObjectURL(rec.cur); }
+    else { delete IMG.recs[key]; delete IMG.urls[key]; }
+  }
+  async function loadImgs() {
+    try {
+      const rq = {};
+      await imgTx('readonly', st => { rq.k = st.getAllKeys(); rq.v = st.getAll(); });
+      rq.k.result.forEach((k, i) => { const r = rq.v.result[i]; if (r && r.cur) setRec(k, r); });
+      return rq.k.result.length > 0;
+    } catch (e) { return false; }
+  }
+  async function putImg(key, rec) { await imgTx('readwrite', st => st.put(rec, key)); setRec(key, rec); }
+  async function delImg(key) { await imgTx('readwrite', st => st.delete(key)); setRec(key, null); }
+
+  const blobOf = cv => new Promise(res => cv.toBlob(b => res(b), 'image/webp', 0.92)); // Safari : repli PNG
+  async function decodeImg(blob) {
+    if (window.createImageBitmap) {
+      try { return await createImageBitmap(blob, { imageOrientation: 'from-image' }); } catch (e) { /* repli ci-dessous */ }
+    }
+    return new Promise((res, rej) => {
+      const im = new Image();
+      im.onload = () => res(im);
+      im.onerror = rej;
+      im.src = URL.createObjectURL(blob);
+    });
+  }
+  const dimsOf = im => [im.width || im.naturalWidth, im.height || im.naturalHeight];
+
+  // Réduit l'image (côté le plus long : 640 px) pour qu'elle reste légère.
+  async function shrink(file) {
+    const im = await decodeImg(file);
+    const [w0, h0] = dimsOf(im);
+    const k = Math.min(1, 640 / Math.max(w0, h0));
+    const cv = document.createElement('canvas');
+    cv.width = Math.max(1, Math.round(w0 * k));
+    cv.height = Math.max(1, Math.round(h0 * k));
+    cv.getContext('2d').drawImage(im, 0, 0, cv.width, cv.height);
+    return blobOf(cv);
+  }
+
+  // Retire un fond uni (blanc, couleur unie ou faux damier de transparence) connecté aux bords.
+  // Renvoie null si le fond n'est pas uni ou si le résultat paraît aberrant.
+  async function noBg(blob) {
+    const im = await decodeImg(blob);
+    const [w, h] = dimsOf(im);
+    if (w < 16 || h < 16) return null;
+    const cv = document.createElement('canvas');
+    cv.width = w; cv.height = h;
+    const cx = cv.getContext('2d', { willReadFrequently: true });
+    cx.drawImage(im, 0, 0);
+    const img = cx.getImageData(0, 0, w, h), d = img.data;
+    const dist = (i, c) => Math.abs(d[i] - c[0]) + Math.abs(d[i + 1] - c[1]) + Math.abs(d[i + 2] - c[2]);
+
+    const pal = [];
+    for (const [x0, y0] of [[0, 0], [w - 8, 0], [0, h - 8], [w - 8, h - 8]]) {
+      for (let y = y0; y < y0 + 8; y++) for (let x = x0; x < x0 + 8; x++) {
+        const i = (y * w + x) * 4;
+        if (d[i + 3] < 200) return null; // déjà transparent
+        const c = [d[i], d[i + 1], d[i + 2]];
+        if (!pal.some(p => Math.abs(p[0] - c[0]) + Math.abs(p[1] - c[1]) + Math.abs(p[2] - c[2]) < 24)) pal.push(c);
+      }
+    }
+    if (pal.length > 6) return null;
+    const isBg = i => pal.some(c => dist(i, c) < 54);
+
+    const seen = new Uint8Array(w * h);
+    const stack = [];
+    const push = (x, y) => {
+      const p = y * w + x;
+      if (!seen[p] && isBg(p * 4)) { seen[p] = 1; stack.push(p); }
+    };
+    for (let x = 0; x < w; x++) { push(x, 0); push(x, h - 1); }
+    for (let y = 0; y < h; y++) { push(0, y); push(w - 1, y); }
+    let n = 0;
+    while (stack.length) {
+      const p = stack.pop();
+      n++;
+      const x = p % w, y = (p - x) / w;
+      if (x > 0) push(x - 1, y);
+      if (x < w - 1) push(x + 1, y);
+      if (y > 0) push(x, y - 1);
+      if (y < h - 1) push(x, y + 1);
+    }
+    if (n < w * h * 0.02 || n > w * h * 0.96) return null;
+    for (let p = 0; p < w * h; p++) if (seen[p]) d[p * 4 + 3] = 0;
+    cx.putImageData(img, 0, 0);
+    return blobOf(cv);
+  }
+
+  async function imgPick(cid, bid, file) {
+    try {
+      const orig = await shrink(file);
+      await putImg(imgKey(cid, bid), { cur: orig, orig });
+      toast('Image enregistrée sur cet appareil ✔');
+    } catch (e) { toast('Image illisible ou stockage impossible'); }
+    ui.openBadge = bid;
+    render();
+  }
+  async function imgNoBg(cid, bid) {
+    const key = imgKey(cid, bid), r = IMG.recs[key];
+    if (!r) return;
+    try {
+      const nb = await noBg(r.orig);
+      if (!nb) { toast('Fond non uniforme : impossible de le retirer automatiquement'); return; }
+      await putImg(key, { cur: nb, orig: r.orig });
+      toast('Fond retiré ✔');
+    } catch (e) { toast('Retrait du fond impossible'); }
+    ui.openBadge = bid;
+    render();
+  }
+  async function imgOrig(cid, bid) {
+    const key = imgKey(cid, bid), r = IMG.recs[key];
+    if (!r) return;
+    try { await putImg(key, { cur: r.orig, orig: r.orig }); } catch (e) { toast('Enregistrement impossible'); }
+    ui.openBadge = bid;
+    render();
+  }
+  async function imgDel(cid, bid) {
+    try { await delImg(imgKey(cid, bid)); } catch (e) { toast('Suppression impossible'); }
+    ui.openBadge = bid;
+    render();
+  }
 
   /* ------------------------------------------------------------------ *
    *  Vues
@@ -1627,7 +1794,13 @@
         break;
       }
       case 'set-mode': ui.setMode = el.dataset.mode === 'badges' ? 'badges' : 'general'; break;
+      case 'img-nobg': imgNoBg(el.dataset.child, el.dataset.badge); return;
+      case 'img-orig': imgOrig(el.dataset.child, el.dataset.badge); return;
+      case 'img-del':
+        if (confirm('Supprimer l’image de ce badge ? L’emoji reviendra.')) imgDel(el.dataset.child, el.dataset.badge);
+        return;
       case 'badge-reset': {
+        ui.openBadge = el.dataset.badge;
         const c = getChild(el.dataset.child);
         if (c && c.badges) delete c.badges[el.dataset.badge];
         break;
@@ -1823,6 +1996,14 @@
       return;
     }
 
+    if (el.dataset && el.dataset.img) {
+      const [icid, ibid] = el.dataset.img.split('|');
+      const f = el.files && el.files[0];
+      el.value = '';
+      if (f) imgPick(icid, ibid, f);
+      return;
+    }
+
     const bind = el.dataset && el.dataset.bind;
     if (!bind) return;
     const p = bind.split('|');
@@ -1898,6 +2079,7 @@
   }
   joinFromLink();
   setTimeout(checkBadges, 0);
+  loadImgs().then(any => { if (any && !tc.drag && !ui.pin) render(); });
   window.addEventListener('hashchange', joinFromLink); // lien ouvert alors que l'application tourne déjà
 
   document.addEventListener('visibilitychange', () => { if (!document.hidden) runSync(); });
