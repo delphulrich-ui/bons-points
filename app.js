@@ -126,7 +126,7 @@
     setTimeout(checkBadges, 0);
   }
 
-  const ui = { tab: 'day', childId: state.settings.children[0].id, date: today(), weekRef: today(), weekMode: 'bilan', setMode: 'general', evoWeeks: 8, unlocked: false, pin: null };
+  const ui = { tab: 'day', childId: state.settings.children[0].id, date: today(), weekRef: today(), weekMode: 'bilan', setMode: 'general', card: null, cardFlip: false, evoWeeks: 8, unlocked: false, pin: null };
 
   const getChild = id => state.settings.children.find(c => c.id === id);
   const curChild = () => getChild(ui.childId) || state.settings.children[0];
@@ -513,7 +513,7 @@
   const weekModes = () => `<div class="seg2" role="tablist">
     <button class="${ui.weekMode === 'bilan' ? 'on' : ''}" data-action="week-mode" data-mode="bilan">Bilan</button>
     <button class="${ui.weekMode === 'evol' ? 'on' : ''}" data-action="week-mode" data-mode="evol">Évolution</button>
-    <button class="${ui.weekMode === 'badges' ? 'on' : ''}" data-action="week-mode" data-mode="badges">🏅 Badges</button></div>`;
+    <button class="${ui.weekMode === 'badges' ? 'on' : ''}" data-action="week-mode" data-mode="badges">🏅 Détail</button></div>`;
 
   /* ------------------------------------------------------------------ *
    *  Badges : calculés à partir de l'historique, donc identiques sur tous les appareils.
@@ -689,7 +689,7 @@
     }).join('');
 
     return `
-      <header class="top"><h1>🏅 Badges</h1></header>
+      <header class="top"><h1>🏅 Détail des badges</h1></header>
       ${weekModes()}
       ${childTabs()}
       <section class="card b-sum"><strong>${got} / ${list.length}</strong> badges débloqués · <strong>${lvls}</strong> niveau${plural(lvls)}</section>
@@ -739,6 +739,170 @@
       <p class="hint">Réglages des badges de ${esc(c.name)} : activez ou masquez chaque badge, choisissez la tâche liée et ajustez les seuils des 7 niveaux.</p>
       ${cards}`;
   }
+
+  /* ------------------------------------------------------------------ *
+   *  Collection de cartes (page pour les enfants) : chaque badge est une carte à collectionner
+   *  qu'on peut incliner au doigt (effet 3D + reflet holographique), retourner, ou piloter en
+   *  inclinant le téléphone. Dessin original, sans rapport avec une marque existante.
+   * ------------------------------------------------------------------ */
+  const BADGE_HUE = { serie: 18, dents: 195, parfaite: 48, sansfaute: 280, champion: 38, roi: 52, retour: 350, devoirs: 220, entente: 150, chambre: 26, matinsoir: 330, chrono: 170, tirelire: 45, chasseur: 300 };
+  const tc = { drag: false, moved: false, t0: 0, x0: 0, y0: 0, wrap: null, gyro: false, hover: null };
+  const clamp01 = n => Math.max(0, Math.min(1, n));
+
+  function cardFront(x, c, mini) {
+    const { b, level, v, next, k, hint } = x;
+    const idx = BADGES.indexOf(b) + 1;
+    const pct = next ? Math.min(100, (v / next) * 100) : 100;
+    const prog = hint
+      ? '<small>Demandez à un parent de régler ce badge</small>'
+      : `<div class="tc-bar"><i style="width:${pct}%"></i></div><small>${v}${next ? ` / ${next}` : ''} ${esc(b.unit)}${next ? '' : ' · max 🎉'}</small>`;
+    return `<div class="tcard lv${level} ${level ? '' : 'locked'} ${mini ? 'mini' : ''}" style="--h:${BADGE_HUE[b.id] || 200}">
+      <div class="tc-top"><span class="tc-name">${esc(b.name)}</span><span class="tc-lvl">${level ? '★'.repeat(level) : '🔒'}</span></div>
+      <div class="tc-art"><span class="tc-emoji">${b.e}</span><i class="tc-s s1"></i><i class="tc-s s2"></i><i class="tc-s s3"></i></div>
+      <div class="tc-rank"><strong>${level ? LEVELS[level - 1] : 'À débloquer'}</strong><span>${esc(b.unit)}</span></div>
+      <div class="tc-text">${esc(b.desc)}${k ? ` « ${esc(k.label)} »` : ''}</div>
+      <div class="tc-prog">${prog}</div>
+      <div class="tc-foot"><span>${esc(c.emoji)} ${esc(c.name)}</span><span>${String(idx).padStart(2, '0')}/${BADGES.length}</span></div>
+      <div class="tc-foil"></div><div class="tc-glare"></div>
+    </div>`;
+  }
+
+  function cardBack(x) {
+    const { b, cf, level, v, cur } = x;
+    return `<div class="tcard back lv${level}" style="--h:${BADGE_HUE[b.id] || 200}">
+      <div class="tb-title">BONS POINTS</div>
+      <div class="tb-crest">${b.e}</div>
+      <ul class="tb-lv">${LEVELS.map((n, i) => `<li class="${level > i ? 'got' : ''}"><i class="dotc lv${i + 1}"></i><span>${n}</span><b>${cf.lv[i]} ${esc(b.unit)}</b><em>${level > i ? '✔' : ''}</em></li>`).join('')}</ul>
+      <div class="tb-now">Actuellement : <strong>${v}</strong> ${esc(b.unit)}${cur !== null && STREAKS.includes(b.id) ? ` · série en cours : ${cur}` : ''}</div>
+    </div>`;
+  }
+
+  function cardsView() {
+    const c = curChild();
+    const st = badgeStats(c);
+    const list = BADGES.map(b => st[b.id]).filter(x => x.cf.on);
+    const got = list.filter(x => x.level > 0).length;
+    const lvls = list.reduce((n, x) => n + x.level, 0);
+    const cards = list.map(x => `
+      <li><button class="card-btn" data-action="card-open" data-badge="${x.b.id}" aria-label="${esc(x.b.name)} : ${x.level ? 'niveau ' + LEVELS[x.level - 1] : 'à débloquer'}">
+        <div class="tc-box">${cardFront(x, c, true)}</div></button></li>`).join('');
+    return `
+      <header class="top"><h1>🏅 Mes badges</h1></header>
+      ${childTabs()}
+      <section class="card b-sum"><strong>${got} / ${list.length}</strong> cartes débloquées · <strong>${lvls}</strong> étoile${plural(lvls)} ⭐</section>
+      <ul class="cards-grid">${cards || '<li class="note">Aucun badge actif.</li>'}</ul>
+      <p class="note">Touchez une carte pour la prendre en main : inclinez-la avec le doigt, tapez pour la retourner.</p>`;
+  }
+
+  function cardViewer() {
+    if (!ui.card) return '';
+    const c = curChild();
+    const st = badgeStats(c);
+    const list = BADGES.filter(b => st[b.id].cf.on);
+    const i = list.findIndex(b => b.id === ui.card);
+    if (i < 0) { ui.card = null; return ''; }
+    const x = st[list[i].id];
+    return `
+      <div class="cv" role="dialog" aria-modal="true" aria-label="Carte ${esc(x.b.name)}">
+        <div class="cv-bg" data-action="card-close"></div>
+        <button class="cv-x" data-action="card-close" aria-label="Fermer">✕</button>
+        <div class="cv-stage">
+          <div class="tc-wrap tc-box">
+            <div class="tc-tilt"><div class="tc-flip ${ui.cardFlip ? 'back' : ''}">${cardFront(x, c, false)}${cardBack(x)}</div></div>
+            <div class="tc-shadow"></div>
+          </div>
+        </div>
+        <p class="cv-hint">Glissez le doigt pour incliner la carte · tapez pour la retourner</p>
+        <div class="cv-bar">
+          <button class="icon-btn" data-action="card-nav" data-n="-1" aria-label="Carte précédente">‹</button>
+          <button class="btn ghost" data-action="card-flip">↻ Retourner</button>
+          <button class="btn ghost ${tc.gyro ? 'on' : ''}" data-action="card-gyro" aria-label="Piloter en inclinant le téléphone">📱</button>
+          <button class="icon-btn" data-action="card-nav" data-n="1" aria-label="Carte suivante">›</button>
+        </div>
+      </div>`;
+  }
+
+  // Inclinaison : px, py entre 0 et 1 (position du doigt sur la carte)
+  function tiltTo(el, px, py, glare) {
+    const MAX = 28;
+    const s = el.style;
+    s.setProperty('--rx', `${(-(py - 0.5) * 2 * MAX).toFixed(2)}deg`);
+    s.setProperty('--ry', `${((px - 0.5) * 2 * MAX).toFixed(2)}deg`);
+    s.setProperty('--mx', `${(px * 100).toFixed(1)}%`);
+    s.setProperty('--my', `${(py * 100).toFixed(1)}%`);
+    s.setProperty('--bx', `${(10 + px * 80).toFixed(1)}%`);
+    s.setProperty('--by', `${(10 + py * 80).toFixed(1)}%`);
+    s.setProperty('--px', ((px - 0.5) * 2).toFixed(3));
+    s.setProperty('--py', ((py - 0.5) * 2).toFixed(3));
+    s.setProperty('--go', glare ? '0.6' : '0');
+  }
+  function tiltFromEvent(wrap, e) {
+    const r = wrap.getBoundingClientRect();
+    tiltTo(wrap.querySelector('.tc-tilt'), clamp01((e.clientX - r.left) / r.width), clamp01((e.clientY - r.top) / r.height), true);
+  }
+  function resetTilt(wrap) {
+    const el = wrap && wrap.querySelector('.tc-tilt');
+    if (!el) return;
+    el.classList.remove('drag');
+    tiltTo(el, 0.5, 0.5, false);
+  }
+  function flipCard() {
+    ui.cardFlip = !ui.cardFlip;
+    const f = document.querySelector('.cv .tc-flip');
+    if (f) f.classList.toggle('back', ui.cardFlip);
+  }
+  async function toggleGyro() {
+    try {
+      if (!('DeviceOrientationEvent' in window)) { toast('Capteurs indisponibles sur cet appareil'); return; }
+      if (!tc.gyro && typeof DeviceOrientationEvent.requestPermission === 'function') {
+        const r = await DeviceOrientationEvent.requestPermission();
+        if (r !== 'granted') { toast('Autorisation refusée'); return; }
+      }
+      tc.gyro = !tc.gyro;
+      const b = document.querySelector('[data-action="card-gyro"]');
+      if (b) b.classList.toggle('on', tc.gyro);
+      if (!tc.gyro) resetTilt(document.querySelector('.cv .tc-wrap'));
+      toast(tc.gyro ? '📱 Inclinez votre téléphone' : 'Inclinaison du téléphone désactivée');
+    } catch (e) { toast('Inclinaison indisponible'); }
+  }
+
+  document.addEventListener('pointerdown', e => {
+    const w = e.target.closest && e.target.closest('.cv .tc-wrap');
+    if (!w) return;
+    tc.drag = true; tc.moved = false; tc.t0 = Date.now(); tc.x0 = e.clientX; tc.y0 = e.clientY; tc.wrap = w;
+    try { w.setPointerCapture(e.pointerId); } catch (err) { /* ignoré */ }
+    w.querySelector('.tc-tilt').classList.add('drag');
+    tiltFromEvent(w, e);
+  });
+  document.addEventListener('pointermove', e => {
+    if (tc.drag) {
+      if (Math.hypot(e.clientX - tc.x0, e.clientY - tc.y0) > 8) tc.moved = true;
+      tiltFromEvent(tc.wrap, e);
+      return;
+    }
+    if (e.pointerType !== 'mouse') return;
+    const w = e.target.closest && e.target.closest('.cv .tc-wrap');
+    if (w) { tc.hover = w; w.querySelector('.tc-tilt').classList.add('drag'); tiltFromEvent(w, e); }
+    else if (tc.hover) { resetTilt(tc.hover); tc.hover = null; }
+  });
+  const endDrag = e => {
+    if (!tc.drag) return;
+    tc.drag = false;
+    const w = tc.wrap;
+    if (e.type === 'pointerup' && !tc.moved && Date.now() - tc.t0 < 400) flipCard();
+    resetTilt(w);
+  };
+  document.addEventListener('pointerup', endDrag);
+  document.addEventListener('pointercancel', endDrag);
+  window.addEventListener('deviceorientation', e => {
+    if (!tc.gyro || tc.drag || e.gamma === null || e.gamma === undefined) return;
+    const w = document.querySelector('.cv .tc-wrap');
+    if (!w) return;
+    const el = w.querySelector('.tc-tilt');
+    el.classList.add('drag');
+    tiltTo(el, clamp01(0.5 + e.gamma / 70), clamp01(0.5 + ((e.beta || 45) - 45) / 70), true);
+  });
+  document.addEventListener('keydown', e => { if (e.key === 'Escape' && ui.card) { ui.card = null; render(); } });
 
   /* ------------------------------------------------------------------ *
    *  Vues
@@ -1096,15 +1260,18 @@
   function nav() {
     const item = (t, icon, label) =>
       `<button class="${ui.tab === t ? 'on' : ''}" data-action="tab" data-tab="${t}" aria-label="${label}"><span>${icon}</span>${label}</button>`;
-    return `<nav class="nav"><div class="nav-inner">${item('day', '📅', 'Jour')}${item('week', '🏆', 'Semaine')}${item('cagnotte', '💰', 'Cagnotte')}${item('settings', ui.unlocked ? '⚙️' : '🔒', 'Réglages')}</div></nav>`;
+    return `<nav class="nav"><div class="nav-inner">${item('day', '📅', 'Jour')}${item('week', '🏆', 'Semaine')}${item('cards', '🏅', 'Badges')}${item('cagnotte', '💰', 'Cagnotte')}${item('settings', ui.unlocked ? '⚙️' : '🔒', 'Réglages')}</div></nav>`;
   }
 
   function render() {
     const y = window.scrollY;
     if (ui.tab === 'settings' && !ui.unlocked) ui.tab = 'day';
-    const view = ui.tab === 'week' ? weekView() : ui.tab === 'cagnotte' ? cagnotteView()
+    if (tc.drag) { setTimeout(render, 300); return; }
+    if (ui.tab !== 'cards') ui.card = null;
+    const view = ui.tab === 'week' ? weekView() : ui.tab === 'cards' ? cardsView() : ui.tab === 'cagnotte' ? cagnotteView()
       : ui.tab === 'settings' ? settingsView() : dayView();
-    document.getElementById('app').innerHTML = `<main class="view">${view}</main>${nav()}${pinOverlay()}`;
+    document.getElementById('app').innerHTML = `<main class="view">${view}</main>${nav()}${cardViewer()}${pinOverlay()}`;
+    document.documentElement.classList.toggle('noscroll', !!ui.card);
     window.scrollTo(0, y);
   }
 
@@ -1446,6 +1613,19 @@
       case 'week-shift': ui.weekRef = fmt(addDays(parse(ui.weekRef), 7 * Number(el.dataset.n))); break;
       case 'week-today': ui.weekRef = today(); break;
       case 'week-mode': ui.weekMode = ['evol', 'badges'].includes(el.dataset.mode) ? el.dataset.mode : 'bilan'; break;
+      case 'card-open': ui.card = el.dataset.badge; ui.cardFlip = false; break;
+      case 'card-close': ui.card = null; break;
+      case 'card-flip': flipCard(); return;
+      case 'card-gyro': toggleGyro(); return;
+      case 'card-nav': {
+        const c = curChild(), st = badgeStats(c);
+        const list = BADGES.filter(b => st[b.id].cf.on);
+        const i = list.findIndex(b => b.id === ui.card);
+        if (i < 0) break;
+        ui.card = list[(i + Number(el.dataset.n) + list.length) % list.length].id;
+        ui.cardFlip = false;
+        break;
+      }
       case 'set-mode': ui.setMode = el.dataset.mode === 'badges' ? 'badges' : 'general'; break;
       case 'badge-reset': {
         const c = getChild(el.dataset.child);
