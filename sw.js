@@ -1,7 +1,7 @@
 // Service worker : fonctionnement hors ligne.
 // Réseau d'abord (les mises à jour arrivent tout de suite), cache en secours hors connexion.
 // Incrémenter CACHE à chaque mise à jour des fichiers.
-const CACHE = 'bonspoints-v10';
+const CACHE = 'bonspoints-v11';
 const ASSETS = [
   './',
   'index.html',
