@@ -441,3 +441,7 @@ button { cursor: pointer; }
 .img-btns .btn.on { background: var(--primary); border-color: var(--primary); color: #fff; }
 .tc-art.clear { background: none; border-color: transparent; box-shadow: none; }
 .tc-art.clear .tc-img { filter: drop-shadow(0 .15em .2em rgba(0, 0, 0, .35)); }
+
+/* Carte mystère (verrouillée) */
+.tcard.locked .tc-art { background: radial-gradient(circle at 50% 35%, #cfcfd6, #9a9aa6 60%, #6f6f7c); }
+.tcard.locked .tc-emoji.q { font-size: 6.5em; font-weight: 900; color: rgba(255, 255, 255, .85); filter: drop-shadow(0 .06em .08em rgba(0, 0, 0, .4)); opacity: 1; }

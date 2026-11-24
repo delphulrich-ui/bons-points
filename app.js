@@ -793,10 +793,10 @@
       ? '<small>Demandez à un parent de régler ce badge</small>'
       : `<div class="tc-bar"><i style="width:${pct}%"></i></div><small>${v}${next ? ` / ${next}` : ''} ${esc(b.unit)}${next ? '' : ' · max 🎉'}</small>`;
     return `<div class="tcard lv${level} ${level ? '' : 'locked'} ${mini ? 'mini' : ''}" style="--h:${BADGE_HUE[b.id] || 200}">
-      <div class="tc-top"><span class="tc-name">${esc(b.name)}</span><span class="tc-lvl">${level ? '★'.repeat(level) : '🔒'}</span></div>
-      <div class="tc-art ${im.rec && im.rec.bg === 'none' ? 'clear' : ''}">${im.url ? `<img class="tc-img" src="${im.url}" alt="" draggable="false">` : `<span class="tc-emoji">${b.e}</span>`}<i class="tc-s s1"></i><i class="tc-s s2"></i><i class="tc-s s3"></i></div>
+      <div class="tc-top"><span class="tc-name">${level ? esc(b.name) : '? ? ?'}</span><span class="tc-lvl">${level ? '★'.repeat(level) : '🔒'}</span></div>
+      <div class="tc-art ${im.rec && im.rec.bg === 'none' ? 'clear' : ''}">${!level ? '<span class="tc-emoji q">?</span>' : im.url ? `<img class="tc-img" src="${im.url}" alt="" draggable="false">` : `<span class="tc-emoji">${b.e}</span>`}<i class="tc-s s1"></i><i class="tc-s s2"></i><i class="tc-s s3"></i></div>
       <div class="tc-rank"><strong>${level ? LEVELS[level - 1] : 'À débloquer'}</strong><span>${esc(b.unit)}</span></div>
-      <div class="tc-text">${esc(b.desc)}${k ? ` « ${esc(k.label)} »` : ''}</div>
+      <div class="tc-text">${level ? `${esc(b.desc)}${k ? ` « ${esc(k.label)} »` : ''}` : 'Carte mystère : continue tes efforts pour la découvrir !'}</div>
       <div class="tc-prog">${prog}</div>
       <div class="tc-foot"><span>${esc(c.emoji)} ${esc(c.name)}</span><span>${String(idx).padStart(2, '0')}/${BADGES.length}</span></div>
       <div class="tc-foil"></div><div class="tc-glare"></div>
@@ -807,7 +807,7 @@
     const { b, cf, level, v, cur } = x;
     return `<div class="tcard back lv${level}" style="--h:${BADGE_HUE[b.id] || 200}">
       <div class="tb-title">BONS POINTS</div>
-      <div class="tb-crest">${b.e}</div>
+      <div class="tb-crest">${level ? b.e : '?'}</div>
       <ul class="tb-lv">${LEVELS.map((n, i) => `<li class="${level > i ? 'got' : ''}"><i class="dotc lv${i + 1}"></i><span>${n}</span><b>${cf.lv[i]} ${esc(b.unit)}</b><em>${level > i ? '✔' : ''}</em></li>`).join('')}</ul>
       <div class="tb-now">Actuellement : <strong>${v}</strong> ${esc(b.unit)}${cur !== null && STREAKS.includes(b.id) ? ` · série en cours : ${cur}` : ''}</div>
     </div>`;
@@ -820,7 +820,7 @@
     const got = list.filter(x => x.level > 0).length;
     const lvls = list.reduce((n, x) => n + x.level, 0);
     const cards = list.map(x => `
-      <li><button class="card-btn" data-action="card-open" data-badge="${x.b.id}" aria-label="${esc(x.b.name)} : ${x.level ? 'niveau ' + LEVELS[x.level - 1] : 'à débloquer'}">
+      <li><button class="card-btn" data-action="card-open" data-badge="${x.b.id}" aria-label="${x.level ? esc(x.b.name) + ' : niveau ' + LEVELS[x.level - 1] : 'Carte mystère à débloquer'}">
         <div class="tc-box">${cardFront(x, c, true)}</div></button></li>`).join('');
     return `
       <header class="top"><h1>🏅 Mes badges</h1></header>
@@ -839,7 +839,7 @@
     if (i < 0) { ui.card = null; return ''; }
     const x = st[list[i].id];
     return `
-      <div class="cv" role="dialog" aria-modal="true" aria-label="Carte ${esc(x.b.name)}">
+      <div class="cv" role="dialog" aria-modal="true" aria-label="Carte ${x.level ? esc(x.b.name) : 'mystère'}">
         <div class="cv-bg" data-action="card-close"></div>
         <button class="cv-x" data-action="card-close" aria-label="Fermer">✕</button>
         <div class="cv-stage">
@@ -883,7 +883,7 @@
     tiltTo(el, 0.5, 0.5, false);
   }
   function showGif(w) {
-    if (ui.cardFlip || !w) return;
+    if (ui.cardFlip || !w || !(+w.dataset.level)) return;
     const g = gifOf(w.dataset.child, w.dataset.badge, +w.dataset.level || 0);
     const art = w.querySelector('.tc-flip .tcard:not(.back) .tc-art');
     if (!g || !art || art.querySelector('.tc-gif')) return;
