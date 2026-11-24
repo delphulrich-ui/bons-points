@@ -432,3 +432,12 @@ button { cursor: pointer; }
 .tc-gif { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; z-index: 2; pointer-events: none; border-radius: inherit; }
 .tc-wrap, .tc-wrap * { -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; }
 .img-prev video { width: 100%; height: 100%; object-fit: cover; }
+
+/* Images par niveau + fond transparent */
+.lv-chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0 2px; }
+.lv-chips button { display: inline-flex; align-items: center; gap: 5px; font-size: .78rem; padding: 6px 10px; border-radius: 999px; border: 1px solid var(--line); background: transparent; color: inherit; cursor: pointer; }
+.lv-chips button.on { background: var(--primary); border-color: var(--primary); color: #fff; }
+.lv-chips .dotc { width: .8em; height: .8em; }
+.img-btns .btn.on { background: var(--primary); border-color: var(--primary); color: #fff; }
+.tc-art.clear { background: none; border-color: transparent; box-shadow: none; }
+.tc-art.clear .tc-img { filter: drop-shadow(0 .15em .2em rgba(0, 0, 0, .35)); }

@@ -126,7 +126,7 @@
     setTimeout(checkBadges, 0);
   }
 
-  const ui = { tab: 'day', childId: state.settings.children[0].id, date: today(), weekRef: today(), weekMode: 'bilan', setMode: 'general', card: null, cardFlip: false, openBadge: null, evoWeeks: 8, unlocked: false, pin: null };
+  const ui = { tab: 'day', childId: state.settings.children[0].id, date: today(), weekRef: today(), weekMode: 'bilan', setMode: 'general', imgLvl: 0, card: null, cardFlip: false, openBadge: null, evoWeeks: 8, unlocked: false, pin: null };
 
   const getChild = id => state.settings.children.find(c => c.id === id);
   const curChild = () => getChild(ui.childId) || state.settings.children[0];
@@ -678,7 +678,7 @@
           <small>${v}${next ? ` / ${next}` : ''} ${esc(b.unit)}${next ? ` · prochain : ${LEVELS[level]}` : ' · niveau maximum 🎉'}${cur !== null && STREAKS.includes(b.id) ? ` · série en cours : ${cur}` : ''}</small>`;
       return `
       <li class="badge ${level ? '' : 'locked'}">
-        ${medal(b, level, imgUrl(c.id, b.id))}
+        ${medal(b, level, imgFor(c.id, b.id, level).url)}
         <div class="b-body">
           <div class="b-top"><strong>${esc(b.name)}</strong><span class="b-lvl lv${level}">${lab}</span></div>
           <div class="b-desc">${esc(b.desc)}${k ? ` · « ${esc(k.label)} »` : ''}</div>
@@ -702,15 +702,24 @@
     <button class="${ui.setMode === 'badges' ? 'on' : ''}" data-action="set-mode" data-mode="badges">🏅 Badges</button></div>`;
 
   function imgRow(c, b) {
-    const url = imgUrl(c.id, b.id);
+    const lv = ui.imgLvl || 0;
+    const url = imgUrl(c.id, b.id, lv);
+    const rec = IMG.recs[imgKey(c.id, b.id, lv)];
     const gif = gifOf(c.id, b.id);
-    const data = `data-child="${c.id}" data-badge="${b.id}"`;
+    const data = `data-child="${c.id}" data-badge="${b.id}" data-lvl="${lv}"`;
+    const chips = ['Toutes', ...LEVELS].map((n, i) => {
+      const has = !!imgUrl(c.id, b.id, i);
+      return `<button class="${i === lv ? 'on' : ''}" data-action="img-lvl" data-lvl="${i}" data-badge="${b.id}">${i ? `<i class="dotc lv${i}"></i>` : ''}${esc(n)}${has ? ' ✓' : ''}</button>`;
+    }).join('');
     return `
+      <div class="lv-chips" role="tablist" aria-label="Niveau de l’image">${chips}</div>
+      <p class="hint">${lv ? `Image affichée quand la carte est au niveau <strong>${LEVELS[lv - 1]}</strong>.` : 'Image utilisée pour tous les niveaux qui n’ont pas leur propre image.'}</p>
       <div class="img-row">
         <div class="img-prev">${url ? `<img src="${url}" alt="">` : `<span>${b.e}</span>`}</div>
         <div class="img-btns">
-          <label class="btn ghost">🖼️ ${url ? 'Changer l’image' : 'Choisir une image'}<input type="file" accept="image/*" hidden data-img="${c.id}|${b.id}"></label>
+          <label class="btn ghost">🖼️ ${url ? 'Changer l’image' : 'Choisir une image'}<input type="file" accept="image/*" hidden data-img="${c.id}|${b.id}|${lv}"></label>
           ${url ? `<button class="btn ghost" data-action="img-nobg" ${data}>✂️ Retirer le fond uni</button>
+          <button class="btn ghost ${rec && rec.bg === 'none' ? 'on' : ''}" data-action="img-bg" ${data}>${rec && rec.bg === 'none' ? '🎨 Remettre le fond coloré' : '🔲 Sans fond coloré (transparent)'}</button>
           <button class="btn ghost" data-action="img-orig" ${data}>↩️ Image d’origine</button>
           <button class="btn danger" data-action="img-del" ${data}>Supprimer l’image</button>` : ''}
         </div>
@@ -778,13 +787,14 @@
   function cardFront(x, c, mini) {
     const { b, level, v, next, k, hint } = x;
     const idx = BADGES.indexOf(b) + 1;
+    const im = imgFor(c.id, b.id, level);
     const pct = next ? Math.min(100, (v / next) * 100) : 100;
     const prog = hint
       ? '<small>Demandez à un parent de régler ce badge</small>'
       : `<div class="tc-bar"><i style="width:${pct}%"></i></div><small>${v}${next ? ` / ${next}` : ''} ${esc(b.unit)}${next ? '' : ' · max 🎉'}</small>`;
     return `<div class="tcard lv${level} ${level ? '' : 'locked'} ${mini ? 'mini' : ''}" style="--h:${BADGE_HUE[b.id] || 200}">
       <div class="tc-top"><span class="tc-name">${esc(b.name)}</span><span class="tc-lvl">${level ? '★'.repeat(level) : '🔒'}</span></div>
-      <div class="tc-art">${imgUrl(c.id, b.id) ? `<img class="tc-img" src="${imgUrl(c.id, b.id)}" alt="" draggable="false">` : `<span class="tc-emoji">${b.e}</span>`}<i class="tc-s s1"></i><i class="tc-s s2"></i><i class="tc-s s3"></i></div>
+      <div class="tc-art ${im.rec && im.rec.bg === 'none' ? 'clear' : ''}">${im.url ? `<img class="tc-img" src="${im.url}" alt="" draggable="false">` : `<span class="tc-emoji">${b.e}</span>`}<i class="tc-s s1"></i><i class="tc-s s2"></i><i class="tc-s s3"></i></div>
       <div class="tc-rank"><strong>${level ? LEVELS[level - 1] : 'À débloquer'}</strong><span>${esc(b.unit)}</span></div>
       <div class="tc-text">${esc(b.desc)}${k ? ` « ${esc(k.label)} »` : ''}</div>
       <div class="tc-prog">${prog}</div>
@@ -965,8 +975,14 @@
    *  sur CET appareil uniquement (IndexedDB). Elles ne sont ni publiées ni synchronisées.
    * ------------------------------------------------------------------ */
   const IMG = { db: null, urls: {}, recs: {}, gifs: {} };
-  const imgKey = (cid, bid) => `${cid}|${bid}`;
-  const imgUrl = (cid, bid) => IMG.urls[imgKey(cid, bid)] || '';
+  const imgKey = (cid, bid, lv) => lv ? `${cid}|${bid}|${lv}` : `${cid}|${bid}`;
+  const imgUrl = (cid, bid, lv) => IMG.urls[imgKey(cid, bid, lv)] || '';
+  // Image à afficher pour un niveau : celle du niveau, sinon l'image « générale », sinon (carte verrouillée) celle du niveau 1.
+  function imgFor(cid, bid, level) {
+    const keys = level ? [imgKey(cid, bid, level), imgKey(cid, bid)] : [imgKey(cid, bid), imgKey(cid, bid, 1)];
+    for (const k of keys) if (IMG.urls[k]) return { url: IMG.urls[k], rec: IMG.recs[k] };
+    return { url: '', rec: null };
+  }
 
   function imgDb() {
     return new Promise((res, rej) => {
@@ -1108,36 +1124,55 @@
     return blobOf(cv);
   }
 
-  async function imgPick(cid, bid, file) {
+  async function hasAlpha(blob) {
+    try {
+      const im = await decodeImg(blob);
+      const [w, h] = dimsOf(im);
+      const cv = document.createElement('canvas'); cv.width = Math.min(w, 200); cv.height = Math.min(h, 200);
+      const cx = cv.getContext('2d', { willReadFrequently: true });
+      cx.drawImage(im, 0, 0, cv.width, cv.height);
+      const d = cx.getImageData(0, 0, cv.width, cv.height).data;
+      for (let i = 3; i < d.length; i += 4) if (d[i] < 250) return true;
+    } catch (e) { /* ignoré */ }
+    return false;
+  }
+  async function imgBg(cid, bid, lv) {
+    const key = imgKey(cid, bid, lv), r = IMG.recs[key];
+    if (!r) return;
+    try { await putImg(key, { cur: r.cur, orig: r.orig, bg: r.bg === 'none' ? undefined : 'none' }); } catch (e) { toast('Enregistrement impossible'); }
+    ui.openBadge = bid;
+    render();
+  }
+  async function imgPick(cid, bid, file, lv) {
     try {
       const orig = await shrink(file);
-      await putImg(imgKey(cid, bid), { cur: orig, orig });
+      await putImg(imgKey(cid, bid, lv), { cur: orig, orig });
       toast('Image enregistrée sur cet appareil ✔');
     } catch (e) { toast('Image illisible ou stockage impossible'); }
     ui.openBadge = bid;
     render();
   }
-  async function imgNoBg(cid, bid) {
-    const key = imgKey(cid, bid), r = IMG.recs[key];
+  async function imgNoBg(cid, bid, lv) {
+    const key = imgKey(cid, bid, lv), r = IMG.recs[key];
     if (!r) return;
     try {
       const nb = await noBg(r.orig);
-      if (!nb) { toast('Fond non uniforme : impossible de le retirer automatiquement'); return; }
-      await putImg(key, { cur: nb, orig: r.orig });
+      if (!nb) { toast(await hasAlpha(r.orig) ? 'Cette image a déjà un fond transparent ✔' : 'Fond non uniforme : impossible de le retirer automatiquement'); return; }
+      await putImg(key, { cur: nb, orig: r.orig, bg: r.bg });
       toast('Fond retiré ✔');
     } catch (e) { toast('Retrait du fond impossible'); }
     ui.openBadge = bid;
     render();
   }
-  async function imgOrig(cid, bid) {
-    const key = imgKey(cid, bid), r = IMG.recs[key];
+  async function imgOrig(cid, bid, lv) {
+    const key = imgKey(cid, bid, lv), r = IMG.recs[key];
     if (!r) return;
-    try { await putImg(key, { cur: r.orig, orig: r.orig }); } catch (e) { toast('Enregistrement impossible'); }
+    try { await putImg(key, { cur: r.orig, orig: r.orig, bg: r.bg }); } catch (e) { toast('Enregistrement impossible'); }
     ui.openBadge = bid;
     render();
   }
-  async function imgDel(cid, bid) {
-    try { await delImg(imgKey(cid, bid)); } catch (e) { toast('Suppression impossible'); }
+  async function imgDel(cid, bid, lv) {
+    try { await delImg(imgKey(cid, bid, lv)); } catch (e) { toast('Suppression impossible'); }
     ui.openBadge = bid;
     render();
   }
@@ -1865,13 +1900,15 @@
         break;
       }
       case 'set-mode': ui.setMode = el.dataset.mode === 'badges' ? 'badges' : 'general'; break;
-      case 'img-nobg': imgNoBg(el.dataset.child, el.dataset.badge); return;
+      case 'img-nobg': imgNoBg(el.dataset.child, el.dataset.badge, +el.dataset.lvl || 0); return;
+      case 'img-bg': imgBg(el.dataset.child, el.dataset.badge, +el.dataset.lvl || 0); return;
+      case 'img-lvl': ui.imgLvl = +el.dataset.lvl || 0; ui.openBadge = el.dataset.badge; break;
       case 'gif-del':
         if (confirm('Supprimer le GIF de ce badge ?')) gifDel(el.dataset.child, el.dataset.badge);
         return;
-      case 'img-orig': imgOrig(el.dataset.child, el.dataset.badge); return;
+      case 'img-orig': imgOrig(el.dataset.child, el.dataset.badge, +el.dataset.lvl || 0); return;
       case 'img-del':
-        if (confirm('Supprimer l’image de ce badge ? L’emoji reviendra.')) imgDel(el.dataset.child, el.dataset.badge);
+        if (confirm('Supprimer l’image de ce badge ? L’emoji reviendra.')) imgDel(el.dataset.child, el.dataset.badge, +el.dataset.lvl || 0);
         return;
       case 'badge-reset': {
         ui.openBadge = el.dataset.badge;
@@ -2078,10 +2115,10 @@
       return;
     }
     if (el.dataset && el.dataset.img) {
-      const [icid, ibid] = el.dataset.img.split('|');
+      const [icid, ibid, ilv] = el.dataset.img.split('|');
       const f = el.files && el.files[0];
       el.value = '';
-      if (f) imgPick(icid, ibid, f);
+      if (f) imgPick(icid, ibid, f, +ilv || 0);
       return;
     }
 
